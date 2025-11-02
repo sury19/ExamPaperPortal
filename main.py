@@ -26,7 +26,7 @@ from email.mime.multipart import MIMEMultipart
 load_dotenv()
 
 # Configuration
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://user:password@localhost/paper_portal")
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:secure123@localhost:5432/exam_paper_portal")
 SECRET_KEY = os.getenv("SECRET_KEY", "your-secret-key-change-this-in-production")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24  # 24 hours
@@ -37,15 +37,43 @@ SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
 GMAIL_USER = os.getenv("GMAIL_USER", "your-email@gmail.com")
 GMAIL_PASS = os.getenv("GMAIL_PASS", "your-app-password")
 
-# Database setup
-engine = create_engine(
-    DATABASE_URL,
-    pool_pre_ping=True,
-    pool_recycle=300,
-    connect_args={
-        "connect_timeout": 10,
-    }
-)
+# Database setup with retry logic for Docker deployments
+def create_engine_with_retry(url, max_retries=5):
+    """Create engine with retry logic for database connection"""
+    import time
+    from sqlalchemy.exc import OperationalError
+    
+    for attempt in range(max_retries):
+        try:
+            engine = create_engine(
+                url,
+                pool_pre_ping=True,
+                pool_recycle=300,
+                connect_args={
+                    "connect_timeout": 10,
+                    "application_name": "paper_portal"
+                },
+                echo=False
+            )
+            # Test the connection
+            with engine.connect() as conn:
+                conn.execute("SELECT 1")
+            print(f"✓ Database connection established on attempt {attempt + 1}")
+            return engine
+        except OperationalError as e:
+            if attempt < max_retries - 1:
+                wait_time = (attempt + 1) * 2
+                print(f"⚠ Database connection failed (attempt {attempt + 1}/{max_retries})")
+                print(f"  Error: {str(e)}")
+                print(f"  Retrying in {wait_time} seconds...")
+                time.sleep(wait_time)
+            else:
+                print(f"✗ Failed to connect to database after {max_retries} attempts")
+                print(f"  Error: {str(e)}")
+                print(f"  DATABASE_URL: {url}")
+                raise
+
+engine = create_engine_with_retry(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
