@@ -4,9 +4,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from sqlalchemy import create_engine, Column, Integer, String, Boolean, ForeignKey, Text, Enum as SQLEnum, DateTime
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import Session, sessionmaker, relationship
-from pydantic import BaseModel, EmailStr
+from sqlalchemy.orm import declarative_base, Session, sessionmaker, relationship
+from pydantic import BaseModel, EmailStr, ConfigDict
 from typing import Optional, List
 from datetime import datetime, timedelta
 from enum import Enum
@@ -166,15 +165,14 @@ class UserCreate(BaseModel):
     password: str
 
 class UserResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    
     id: int
     email: str
     name: str
     is_admin: bool
     email_verified: bool
     created_at: datetime
-    
-    class Config:
-        from_attributes = True
 
 # OTP Schemas
 class SendOTPRequest(BaseModel):
@@ -195,17 +193,18 @@ class CourseUpdate(BaseModel):
     description: Optional[str] = None
 
 class CourseResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    
     id: int
     code: str
     name: str
     description: Optional[str]
     created_at: datetime
     updated_at: datetime
-    
-    class Config:
-        from_attributes = True
 
 class PaperResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    
     id: int
     course_id: int
     course_code: Optional[str]
@@ -224,9 +223,6 @@ class PaperResponse(BaseModel):
     uploaded_at: datetime
     reviewed_at: Optional[datetime]
     rejection_reason: Optional[str]
-    
-    class Config:
-        from_attributes = True
 
 class PaperReview(BaseModel):
     status: SubmissionStatus
@@ -1146,4 +1142,4 @@ def root():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8007)
+    uvicorn.run(app, host="0.0.0.0", port=8000)
