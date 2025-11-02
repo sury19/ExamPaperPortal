@@ -1,0 +1,76 @@
+# requirements.txt
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+sqlalchemy==2.0.23
+psycopg2-binary==2.9.9
+pydantic[email]==2.5.0
+python-multipart==0.0.6
+alembic==1.13.0
+
+# Required for authentication
+python-jose[cryptography]==3.3.0  # For JWT auth
+passlib[bcrypt]==1.7.4  # For password hashing
+PyPDF2==3.0.1  # For PDF processing
+Pillow==10.1.0  # For image processing
+
+# ============================================
+# .env (Environment Variables)
+# ============================================
+DATABASE_URL=postgresql://username:password@localhost:5432/paper_portal
+SECRET_KEY=your-secret-key-here
+UPLOAD_DIR=uploads
+MAX_UPLOAD_SIZE=10485760  # 10MB in bytes
+
+# ============================================
+# alembic.ini (Database Migrations Config)
+# ============================================
+# Run: alembic init alembic
+# Then update alembic/env.py to import your models
+
+# ============================================
+# docker-compose.yml (Quick PostgreSQL Setup)
+# ============================================
+version: '3.8'
+services:
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: paper_portal_user
+      POSTGRES_PASSWORD: secure_password
+      POSTGRES_DB: paper_portal
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+volumes:
+  postgres_data:
+
+# ============================================
+# Usage Commands
+# ============================================
+# 1. Install dependencies:
+#    pip install -r requirements.txt
+
+# 2. Start PostgreSQL (if using Docker):
+#    docker-compose up -d
+
+# 3. Run the application:
+#    uvicorn main:app --reload
+
+# 4. API Documentation:
+#    http://localhost:8000/docs
+
+# 5. Create initial admin user (Python shell or script):
+from sqlalchemy.orm import Session
+from main import SessionLocal, User
+
+db = SessionLocal()
+admin = User(
+    email="admin@university.edu",
+    name="Admin User",
+    is_admin=True
+)
+db.add(admin)
+db.commit()
+print(f"Admin created with ID: {admin.id}")
