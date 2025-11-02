@@ -1,0 +1,55 @@
+NEON DB CONFIGURATION COMPLETE
+==============================
+
+DATABASE: Neon DB
+URL: postgresql://neondb_owner:npg_WBolbXfY7s6e@ep-plain-mouse-a13pemef-pooler.ap-southeast-1.aws.neon.tech/neondb
+Region: Asia Pacific (Singapore)
+
+KEY FEATURES CONFIGURED:
+✓ SSL/TLS enabled for Neon DB connections
+✓ Connection pooling optimized (pool_size=5, max_overflow=10)
+✓ Pool recycling set to 300 seconds
+✓ Connection timeout: 10 seconds
+✓ Auto-detection of Neon DB endpoints
+
+EMAIL CONFIGURATION:
+✓ Gmail SMTP enabled (smtp.gmail.com:587)
+✓ TLS/STARTTLS encryption
+✓ Beautiful HTML email template with black background
+✓ Professional OTP display with glowing effect
+✓ 10-minute OTP expiration
+
+STARTUP:
+1. Activate venv: source exams/bin/activate
+2. Install deps: pip install -r requirements.txt
+3. Run: uvicorn main:app --reload --port 8000
+4. API Docs: http://localhost:8000/docs
+
+DATABASE TABLES:
+- Auto-created on first run
+- Tables: users, courses, papers
+- All relationships configured
+
+ENVIRONMENT VARIABLES (.env):
+- DATABASE_URL: Neon DB connection string (configured)
+- GMAIL_USER: sharmadev0042@gmail.com (configured)
+- GMAIL_PASS: Gmail app password (configured)
+- SECRET_KEY: hallelujiah (configured)
+
+NEON DB OPERATIONS:
+Login to https://console.neon.tech to:
+- View database usage
+- Create backups
+- Scale connections
+- Monitor performance
+
+TROUBLESHOOTING:
+If connection fails:
+1. Check internet connection
+2. Verify Neon DB project is active
+3. Check DATABASE_URL in .env
+4. Ensure SSL is enabled
+
+Files Modified:
+- main.py: Added Neon DB SSL support
+- .env: Cleaned up email configuration

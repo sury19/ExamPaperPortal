@@ -26,54 +26,43 @@ from email.mime.multipart import MIMEMultipart
 load_dotenv()
 
 # Configuration
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:secure123@localhost:5432/exam_paper_portal")
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://user:password@localhost/paper_portal")
 SECRET_KEY = os.getenv("SECRET_KEY", "your-secret-key-change-this-in-production")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24  # 24 hours
 
-# Email Configuration (via Gmail SMTP)
+# Email Configuration
 SMTP_SERVER = os.getenv("SMTP_SERVER", "smtp.gmail.com")
 SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
 GMAIL_USER = os.getenv("GMAIL_USER", "your-email@gmail.com")
 GMAIL_PASS = os.getenv("GMAIL_PASS", "your-app-password")
 
-# Database setup with retry logic for Docker deployments
-def create_engine_with_retry(url, max_retries=5):
-    """Create engine with retry logic for database connection"""
-    import time
-    from sqlalchemy.exc import OperationalError
-    
-    for attempt in range(max_retries):
-        try:
-            engine = create_engine(
-                url,
-                pool_pre_ping=True,
-                pool_recycle=300,
-                connect_args={
-                    "connect_timeout": 10,
-                    "application_name": "paper_portal"
-                },
-                echo=False
-            )
-            # Test the connection
-            with engine.connect() as conn:
-                conn.execute("SELECT 1")
-            print(f"✓ Database connection established on attempt {attempt + 1}")
-            return engine
-        except OperationalError as e:
-            if attempt < max_retries - 1:
-                wait_time = (attempt + 1) * 2
-                print(f"⚠ Database connection failed (attempt {attempt + 1}/{max_retries})")
-                print(f"  Error: {str(e)}")
-                print(f"  Retrying in {wait_time} seconds...")
-                time.sleep(wait_time)
-            else:
-                print(f"✗ Failed to connect to database after {max_retries} attempts")
-                print(f"  Error: {str(e)}")
-                print(f"  DATABASE_URL: {url}")
-                raise
+# Database setup with Neon DB support
+# Neon requires SSL/TLS connections
+if "neon.tech" in DATABASE_URL or "neondb" in DATABASE_URL:
+    # Neon DB connection with SSL
+    engine = create_engine(
+        DATABASE_URL,
+        connect_args={
+            "sslmode": "require",
+            "connect_timeout": 10,
+        },
+        pool_pre_ping=True,
+        pool_recycle=300,
+        pool_size=5,
+        max_overflow=10,
+    )
+else:
+    # Local PostgreSQL or other providers
+    engine = create_engine(
+        DATABASE_URL,
+        pool_pre_ping=True,
+        pool_recycle=300,
+        connect_args={
+            "connect_timeout": 10,
+        }
+    )
 
-engine = create_engine_with_retry(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
@@ -287,9 +276,6 @@ def send_otp_email(email: str, otp: str):
     Supports both testing (console output) and production (actual email sending).
     """
     try:
-        gmail_user = os.getenv("GMAIL_USER")
-        gmail_pass = os.getenv("GMAIL_PASS")
-        
         # For testing/demo: print OTP to console
         print(f"\n{'='*60}")
         print(f"OTP for {email}: {otp}")
@@ -297,10 +283,10 @@ def send_otp_email(email: str, otp: str):
         print(f"{'='*60}\n")
         
         # For production: send actual email via Gmail SMTP
-        if gmail_user and gmail_pass:
+        if GMAIL_USER and GMAIL_PASS:
             try:
                 message = MIMEMultipart()
-                message["From"] = gmail_user
+                message["From"] = GMAIL_USER
                 message["To"] = email
                 message["Subject"] = "Your Paper Portal Verification Code"
                 
@@ -434,43 +420,26 @@ def send_otp_email(email: str, otp: str):
                             margin: 0;
                             font-style: italic;
                         }}
-                        @media (max-width: 600px) {{
-                            .container {{
-                                padding: 10px;
-                            }}
-                            .content {{
-                                padding: 20px;
-                            }}
-                            .otp-code {{
-                                font-size: 28px;
-                                letter-spacing: 4px;
-                                padding: 15px 20px;
-                            }}
-                        }}
                     </style>
                 </head>
                 <body>
                     <div class="container">
-                        <!-- Header -->
                         <div class="header">
                             <div class="logo">📚 Paper Portal</div>
                             <p class="subtitle">Academic Paper Management System</p>
                         </div>
 
-                        <!-- Main Content -->
                         <div class="content">
                             <h1 class="greeting">Email Verification Required</h1>
                             <p style="color: #cccccc; margin-bottom: 30px;">
                                 Welcome to Paper Portal! To complete your registration and access academic papers, please verify your email address using the code below.
                             </p>
 
-                            <!-- OTP Display -->
                             <div class="otp-container">
                                 <span class="otp-label">Your Verification Code</span>
                                 <div class="otp-code">{otp}</div>
                             </div>
 
-                            <!-- Warning Box -->
                             <div class="warning">
                                 <div class="warning-icon">⏰</div>
                                 <div class="warning-text">Code Expires in 10 Minutes</div>
@@ -482,7 +451,6 @@ def send_otp_email(email: str, otp: str):
                             </p>
                         </div>
 
-                        <!-- Footer -->
                         <div class="footer">
                             <div class="security-note">
                                 <p class="security-text">
@@ -503,7 +471,7 @@ def send_otp_email(email: str, otp: str):
                 # Send via Gmail SMTP
                 with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
                     server.starttls()
-                    server.login(gmail_user, gmail_pass)
+                    server.login(GMAIL_USER, GMAIL_PASS)
                     server.send_message(message)
                 
                 print(f"✓ Email sent successfully to {email}")
@@ -511,16 +479,16 @@ def send_otp_email(email: str, otp: str):
             except smtplib.SMTPAuthenticationError:
                 print(f"⚠ Gmail authentication failed. Check GMAIL_USER and GMAIL_PASS in .env")
                 print(f"⚠ Make sure you're using App Password (not regular Gmail password)")
-                return True  # Still return True because OTP was printed to console
+                return True
             except Exception as e:
                 print(f"⚠ Failed to send email via Gmail: {e}")
                 print(f"⚠ Using console output only for testing")
-                return True  # Still return True because OTP was printed to console
+                return True
         
         return True
     except Exception as e:
         print(f"Error in send_otp_email: {e}")
-        return True  # Still return True because OTP was printed to console
+        return True
 
 def get_db():
     db = SessionLocal()
