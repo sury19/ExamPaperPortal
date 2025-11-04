@@ -21,6 +21,13 @@ import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
+# Try to import Resend (recommended for production email sending)
+try:
+    import resend
+    RESEND_AVAILABLE = True
+except ImportError:
+    RESEND_AVAILABLE = False
+
 # Load environment variables
 load_dotenv()
 
@@ -30,19 +37,32 @@ SECRET_KEY = os.getenv("SECRET_KEY", "your-secret-key-change-this-in-production"
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24  # 24 hours
 
-# Email Configuration
+# Email Configuration - Support Resend (primary) and Gmail SMTP (fallback)
+RESEND_API_KEY = os.getenv("RESEND_API_KEY", "").strip()
+RESEND_FROM_EMAIL = os.getenv("RESEND_FROM_EMAIL", "onboarding@resend.dev").strip()
+
 SMTP_SERVER = os.getenv("SMTP_SERVER", "smtp.gmail.com")
 SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
 GMAIL_USER = os.getenv("GMAIL_USER", "").strip()
 GMAIL_PASS = os.getenv("GMAIL_PASS", "").strip()
 
 # Validate email configuration on startup
-EMAIL_CONFIGURED = bool(GMAIL_USER and GMAIL_PASS and not GMAIL_USER.startswith("your-") and not GMAIL_PASS.startswith("your-"))
+RESEND_CONFIGURED = bool(RESEND_API_KEY and RESEND_AVAILABLE)
+GMAIL_CONFIGURED = bool(GMAIL_USER and GMAIL_PASS and not GMAIL_USER.startswith("your-") and not GMAIL_PASS.startswith("your-"))
+EMAIL_CONFIGURED = RESEND_CONFIGURED or GMAIL_CONFIGURED
+
 if not EMAIL_CONFIGURED:
-    print("\n⚠️  WARNING: Email not configured properly!")
-    print("   GMAIL_USER and GMAIL_PASS must be set in .env file")
-    print("   OTP emails will be printed to console only")
+    print("\n⚠️  WARNING: Email not configured!")
+    print("   Option 1 (Recommended): Set RESEND_API_KEY and RESEND_FROM_EMAIL")
+    print("   Option 2: Set GMAIL_USER and GMAIL_PASS")
+    print("   OTP emails will be printed to console only for now")
     print("\n")
+elif RESEND_CONFIGURED:
+    print("\n✓ Resend email service configured")
+    resend.api_key = RESEND_API_KEY
+elif GMAIL_CONFIGURED:
+    print("\n✓ Gmail SMTP email service configured (may have network restrictions on Railway)")
+print("\n")
 
 # Database setup with Neon DB support
 # Neon requires SSL/TLS connections
@@ -276,7 +296,7 @@ def generate_otp():
 
 def send_otp_email(email: str, otp: str):
     """
-    Send OTP to email using Gmail SMTP.
+    Send OTP to email using Resend (primary) or Gmail SMTP (fallback).
     Supports both testing (console output) and production (actual email sending).
     """
     try:
@@ -286,229 +306,243 @@ def send_otp_email(email: str, otp: str):
         print(f"Expires in: 10 minutes")
         print(f"{'='*60}\n")
         
-        # If email is not configured properly, just use console output
+        # If email is not configured, just use console output
         if not EMAIL_CONFIGURED:
             print(f"ℹ️  Email credentials not configured. OTP shown above.")
-            print(f"    Configure GMAIL_USER and GMAIL_PASS in .env to enable email sending.\n")
+            print(f"    Configure RESEND_API_KEY or GMAIL_USER/GMAIL_PASS in .env\n")
             return True
         
-        # Try to send actual email via Gmail SMTP
-        try:
-            message = MIMEMultipart()
-            message["From"] = GMAIL_USER
-            message["To"] = email
-            message["Subject"] = "Your Paper Portal Verification Code"
-            
-            body = f"""
-                <!DOCTYPE html>
-                <html lang="en">
-                <head>
-                    <meta charset="UTF-8">
-                    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-                    <title>Paper Portal - Email Verification</title>
-                    <style>
-                        body {{
-                            margin: 0;
-                            padding: 0;
-                            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-                            background-color: #000000;
-                            color: #ffffff;
-                            line-height: 1.6;
-                        }}
-                        .container {{
-                            max-width: 600px;
-                            margin: 0 auto;
-                            padding: 20px;
-                            background-color: #000000;
-                        }}
-                        .header {{
-                            text-align: center;
-                            padding: 40px 20px;
-                            background: linear-gradient(135deg, #1a1a1a 0%, #2d2d2d 100%);
-                            border-radius: 15px;
-                            margin-bottom: 30px;
-                            border: 2px solid #333333;
-                        }}
-                        .logo {{
-                            font-size: 28px;
-                            font-weight: bold;
-                            color: #ffffff;
-                            margin-bottom: 10px;
-                            text-shadow: 0 2px 4px rgba(0,0,0,0.5);
-                        }}
-                        .subtitle {{
-                            font-size: 16px;
-                            color: #cccccc;
-                            margin-bottom: 0;
-                        }}
-                        .content {{
-                            background-color: #1a1a1a;
-                            padding: 40px;
-                            border-radius: 15px;
-                            border: 1px solid #333333;
-                            margin-bottom: 30px;
-                        }}
-                        .greeting {{
-                            font-size: 20px;
-                            font-weight: 600;
-                            color: #ffffff;
-                            margin-bottom: 20px;
-                        }}
-                        .otp-container {{
-                            text-align: center;
-                            margin: 40px 0;
-                            padding: 30px;
-                            background: linear-gradient(135deg, #2d2d2d 0%, #1a1a1a 100%);
-                            border-radius: 12px;
-                            border: 2px solid #4a4a4a;
-                        }}
-                        .otp-label {{
-                            font-size: 16px;
-                            color: #cccccc;
-                            margin-bottom: 15px;
-                            display: block;
-                        }}
-                        .otp-code {{
-                            font-family: 'Courier New', monospace;
-                            font-size: 36px;
-                            font-weight: bold;
-                            color: #00d4ff;
-                            letter-spacing: 8px;
-                            background-color: #000000;
-                            padding: 20px 40px;
-                            border-radius: 8px;
-                            border: 2px solid #00d4ff;
-                            display: inline-block;
-                            text-shadow: 0 0 10px rgba(0, 212, 255, 0.5);
-                            box-shadow: 0 0 20px rgba(0, 212, 255, 0.2);
-                        }}
-                        .warning {{
-                            background-color: #2d1b1b;
-                            border: 1px solid #ff6b6b;
-                            border-radius: 8px;
-                            padding: 20px;
-                            margin: 30px 0;
-                            text-align: center;
-                        }}
-                        .warning-icon {{
-                            color: #ff6b6b;
-                            font-size: 24px;
-                            margin-bottom: 10px;
-                        }}
-                        .warning-text {{
-                            color: #ff6b6b;
-                            font-weight: 600;
-                            margin-bottom: 5px;
-                        }}
-                        .warning-subtext {{
-                            color: #cccccc;
-                            font-size: 14px;
-                        }}
-                        .footer {{
-                            text-align: center;
-                            padding: 30px 20px;
-                            background-color: #0a0a0a;
-                            border-radius: 10px;
-                            border-top: 1px solid #333333;
-                        }}
-                        .footer-text {{
-                            color: #888888;
-                            font-size: 12px;
-                            margin: 0;
-                        }}
-                        .security-note {{
-                            background-color: #1a1a2e;
-                            border: 1px solid #16213e;
-                            border-radius: 8px;
-                            padding: 15px;
-                            margin-top: 20px;
-                        }}
-                        .security-text {{
-                            color: #a0a0a0;
-                            font-size: 11px;
-                            margin: 0;
-                            font-style: italic;
-                        }}
-                    </style>
-                </head>
-                <body>
-                    <div class="container">
-                        <div class="header">
-                            <div class="logo">📚 Paper Portal</div>
-                            <p class="subtitle">Academic Paper Management System</p>
-                        </div>
-
-                        <div class="content">
-                            <h1 class="greeting">Email Verification Required</h1>
-                            <p style="color: #cccccc; margin-bottom: 30px;">
-                                Welcome to Paper Portal! To complete your registration and access academic papers, please verify your email address using the code below.
-                            </p>
-
-                            <div class="otp-container">
-                                <span class="otp-label">Your Verification Code</span>
-                                <div class="otp-code">{otp}</div>
-                            </div>
-
-                            <div class="warning">
-                                <div class="warning-icon">⏰</div>
-                                <div class="warning-text">Code Expires in 10 Minutes</div>
-                                <div class="warning-subtext">Please use this code immediately to complete your verification</div>
-                            </div>
-
-                            <p style="color: #cccccc; text-align: center;">
-                                If you didn't request this verification code, please ignore this email.
-                            </p>
-                        </div>
-
-                        <div class="footer">
-                            <div class="security-note">
-                                <p class="security-text">
-                                    🔒 This is an automated message from Paper Portal. For security reasons, never share your verification code with anyone.
-                                </p>
-                            </div>
-                            <p class="footer-text" style="margin-top: 20px;">
-                                © 2025 Paper Portal - Secure Academic Document Management
-                            </p>
-                        </div>
+        # Email HTML template
+        html_body = f"""
+            <!DOCTYPE html>
+            <html lang="en">
+            <head>
+                <meta charset="UTF-8">
+                <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                <title>Paper Portal - Email Verification</title>
+                <style>
+                    body {{
+                        margin: 0;
+                        padding: 0;
+                        font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+                        background-color: #000000;
+                        color: #ffffff;
+                        line-height: 1.6;
+                    }}
+                    .container {{
+                        max-width: 600px;
+                        margin: 0 auto;
+                        padding: 20px;
+                        background-color: #000000;
+                    }}
+                    .header {{
+                        text-align: center;
+                        padding: 40px 20px;
+                        background: linear-gradient(135deg, #1a1a1a 0%, #2d2d2d 100%);
+                        border-radius: 15px;
+                        margin-bottom: 30px;
+                        border: 2px solid #333333;
+                    }}
+                    .logo {{
+                        font-size: 28px;
+                        font-weight: bold;
+                        color: #ffffff;
+                        margin-bottom: 10px;
+                        text-shadow: 0 2px 4px rgba(0,0,0,0.5);
+                    }}
+                    .subtitle {{
+                        font-size: 16px;
+                        color: #cccccc;
+                        margin-bottom: 0;
+                    }}
+                    .content {{
+                        background-color: #1a1a1a;
+                        padding: 40px;
+                        border-radius: 15px;
+                        border: 1px solid #333333;
+                        margin-bottom: 30px;
+                    }}
+                    .greeting {{
+                        font-size: 20px;
+                        font-weight: 600;
+                        color: #ffffff;
+                        margin-bottom: 20px;
+                    }}
+                    .otp-container {{
+                        text-align: center;
+                        margin: 40px 0;
+                        padding: 30px;
+                        background: linear-gradient(135deg, #2d2d2d 0%, #1a1a1a 100%);
+                        border-radius: 12px;
+                        border: 2px solid #4a4a4a;
+                    }}
+                    .otp-label {{
+                        font-size: 16px;
+                        color: #cccccc;
+                        margin-bottom: 15px;
+                        display: block;
+                    }}
+                    .otp-code {{
+                        font-family: 'Courier New', monospace;
+                        font-size: 36px;
+                        font-weight: bold;
+                        color: #00d4ff;
+                        letter-spacing: 8px;
+                        background-color: #000000;
+                        padding: 20px 40px;
+                        border-radius: 8px;
+                        border: 2px solid #00d4ff;
+                        display: inline-block;
+                        text-shadow: 0 0 10px rgba(0, 212, 255, 0.5);
+                        box-shadow: 0 0 20px rgba(0, 212, 255, 0.2);
+                    }}
+                    .warning {{
+                        background-color: #2d1b1b;
+                        border: 1px solid #ff6b6b;
+                        border-radius: 8px;
+                        padding: 20px;
+                        margin: 30px 0;
+                        text-align: center;
+                    }}
+                    .warning-icon {{
+                        color: #ff6b6b;
+                        font-size: 24px;
+                        margin-bottom: 10px;
+                    }}
+                    .warning-text {{
+                        color: #ff6b6b;
+                        font-weight: 600;
+                        margin-bottom: 5px;
+                    }}
+                    .warning-subtext {{
+                        color: #cccccc;
+                        font-size: 14px;
+                    }}
+                    .footer {{
+                        text-align: center;
+                        padding: 30px 20px;
+                        background-color: #0a0a0a;
+                        border-radius: 10px;
+                        border-top: 1px solid #333333;
+                    }}
+                    .footer-text {{
+                        color: #888888;
+                        font-size: 12px;
+                        margin: 0;
+                    }}
+                    .security-note {{
+                        background-color: #1a1a2e;
+                        border: 1px solid #16213e;
+                        border-radius: 8px;
+                        padding: 15px;
+                        margin-top: 20px;
+                    }}
+                    .security-text {{
+                        color: #a0a0a0;
+                        font-size: 11px;
+                        margin: 0;
+                        font-style: italic;
+                    }}
+                </style>
+            </head>
+            <body>
+                <div class="container">
+                    <div class="header">
+                        <div class="logo">📚 Paper Portal</div>
+                        <p class="subtitle">Academic Paper Management System</p>
                     </div>
-                </body>
-                </html>
-                """
+
+                    <div class="content">
+                        <h1 class="greeting">Email Verification Required</h1>
+                        <p style="color: #cccccc; margin-bottom: 30px;">
+                            Welcome to Paper Portal! To complete your registration and access academic papers, please verify your email address using the code below.
+                        </p>
+
+                        <div class="otp-container">
+                            <span class="otp-label">Your Verification Code</span>
+                            <div class="otp-code">{otp}</div>
+                        </div>
+
+                        <div class="warning">
+                            <div class="warning-icon">⏰</div>
+                            <div class="warning-text">Code Expires in 10 Minutes</div>
+                            <div class="warning-subtext">Please use this code immediately to complete your verification</div>
+                        </div>
+
+                        <p style="color: #cccccc; text-align: center;">
+                            If you didn't request this verification code, please ignore this email.
+                        </p>
+                    </div>
+
+                    <div class="footer">
+                        <div class="security-note">
+                            <p class="security-text">
+                                🔒 This is an automated message from Paper Portal. For security reasons, never share your verification code with anyone.
+                            </p>
+                        </div>
+                        <p class="footer-text" style="margin-top: 20px;">
+                            © 2025 Paper Portal - Secure Academic Document Management
+                        </p>
+                    </div>
+                </div>
+            </body>
+            </html>
+            """
+        
+        # Try Resend first (recommended for production)
+        if RESEND_CONFIGURED:
+            try:
+                email_response = resend.Emails.send({
+                    "from": RESEND_FROM_EMAIL,
+                    "to": [email],
+                    "subject": "Your Paper Portal Verification Code",
+                    "html": html_body
+                })
+                print(f"✓ Email sent successfully via Resend to {email}")
+                return True
+            except Exception as e:
+                print(f"❌ Resend error: {type(e).__name__}: {e}")
+                print(f"   Falling back to Gmail SMTP...\n")
+        
+        # Fallback to Gmail SMTP if Resend fails or not configured
+        if GMAIL_CONFIGURED:
+            try:
+                message = MIMEMultipart()
+                message["From"] = GMAIL_USER
+                message["To"] = email
+                message["Subject"] = "Your Paper Portal Verification Code"
+                message.attach(MIMEText(html_body, "html"))
+                
+                # Send via Gmail SMTP with timeout
+                with smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=10) as server:
+                    server.starttls()
+                    server.login(GMAIL_USER, GMAIL_PASS)
+                    server.send_message(message)
+                
+                print(f"✓ Email sent successfully via Gmail to {email}")
+                return True
+                
+            except smtplib.SMTPAuthenticationError as e:
+                print(f"❌ Gmail authentication failed: {e}")
+                print(f"   Reason: Check GMAIL_USER and GMAIL_PASS in .env")
+                print(f"   Note: Use App Password (not regular Gmail password)")
+                print(f"   Check: https://myaccount.google.com/apppasswords\n")
+                return True
+                
+            except (smtplib.SMTPException, OSError) as e:
+                print(f"❌ Gmail SMTP error: {type(e).__name__}: {e}")
+                print(f"   Note: Railway may have SMTP network restrictions")
+                print(f"   Recommendation: Use Resend instead")
+                print(f"   Get free API key at https://resend.com\n")
+                return True
             
-            message.attach(MIMEText(body, "html"))
-            
-            # Send via Gmail SMTP with timeout
-            with smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=10) as server:
-                server.starttls()
-                server.login(GMAIL_USER, GMAIL_PASS)
-                server.send_message(message)
-            
-            print(f"✓ Email sent successfully to {email}")
-            return True
-            
-        except smtplib.SMTPAuthenticationError as e:
-            print(f"❌ Gmail authentication failed: {e}")
-            print(f"   Reason: Check GMAIL_USER and GMAIL_PASS in .env")
-            print(f"   Note: Use App Password (not regular Gmail password)")
-            print(f"   Check: https://myaccount.google.com/apppasswords\n")
-            return True
-            
-        except smtplib.SMTPException as e:
-            print(f"❌ SMTP error: {e}")
-            print(f"   Note: Railway may have network restrictions. Check email configuration.\n")
-            return True
-            
-        except OSError as e:
-            print(f"❌ Network error: {e}")
-            print(f"   Note: Cannot reach Gmail SMTP server. Possible causes:")
-            print(f"   1. Network/firewall restrictions on Railway")
-            print(f"   2. SMTP_SERVER/SMTP_PORT incorrect in .env")
-            print(f"   3. Gmail credentials invalid or expired\n")
-            return True
-            
-        except Exception as e:
-            print(f"❌ Unexpected error sending email: {type(e).__name__}: {e}\n")
-            return True
+            except Exception as e:
+                print(f"❌ Unexpected error sending email: {type(e).__name__}: {e}\n")
+                return True
+        
+        # If we get here, no email service worked
+        print(f"⚠️  No email service available for sending\n")
+        return True
     
     except Exception as e:
         print(f"❌ Critical error in send_otp_email: {type(e).__name__}: {e}\n")
@@ -590,50 +624,99 @@ def health_check():
 
 @app.get("/health/email")
 def email_health_check():
-    """Check email configuration and attempt connection"""
-    if not EMAIL_CONFIGURED:
-        return {
+    """Check email configuration and provider status"""
+    status_info = {
+        "status": "unknown",
+        "providers": {},
+        "active_provider": None,
+        "mode": "console_output_only"
+    }
+    
+    # Check Resend
+    if RESEND_CONFIGURED:
+        try:
+            # Validate Resend API key is set (basic check)
+            if not RESEND_API_KEY:
+                status_info["providers"]["resend"] = {
+                    "status": "misconfigured",
+                    "error": "RESEND_API_KEY is empty"
+                }
+            else:
+                # Basic validation - Resend API key should be non-empty
+                status_info["providers"]["resend"] = {
+                    "status": "configured",
+                    "from_email": RESEND_FROM_EMAIL,
+                    "note": "Ready to send emails via Resend API"
+                }
+                status_info["active_provider"] = "resend"
+        except Exception as e:
+            status_info["providers"]["resend"] = {
+                "status": "error",
+                "error": str(e)
+            }
+    else:
+        status_info["providers"]["resend"] = {
             "status": "not_configured",
-            "message": "Email credentials not set in .env",
-            "action": "Set GMAIL_USER and GMAIL_PASS in environment variables",
-            "mode": "console_output_only"
+            "error": "Set RESEND_API_KEY in environment"
         }
     
-    try:
-        # Test SMTP connection without sending email
-        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=10) as server:
-            server.starttls()
-            server.login(GMAIL_USER, GMAIL_PASS)
+    # Check Gmail SMTP
+    if GMAIL_CONFIGURED:
+        try:
+            # Test SMTP connection without sending email
+            with smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=10) as server:
+                server.starttls()
+                server.login(GMAIL_USER, GMAIL_PASS)
+            
+            status_info["providers"]["gmail"] = {
+                "status": "healthy",
+                "email": GMAIL_USER,
+                "smtp_server": SMTP_SERVER,
+                "smtp_port": SMTP_PORT
+            }
+            
+            # If Resend is not active, Gmail becomes primary
+            if not status_info["active_provider"]:
+                status_info["active_provider"] = "gmail"
         
-        return {
-            "status": "healthy",
-            "email": GMAIL_USER,
-            "smtp_server": SMTP_SERVER,
-            "smtp_port": SMTP_PORT,
-            "message": "Email configuration verified"
+        except smtplib.SMTPAuthenticationError as e:
+            status_info["providers"]["gmail"] = {
+                "status": "authentication_failed",
+                "email": GMAIL_USER,
+                "error": "Invalid credentials",
+                "action": "Check GMAIL_USER and GMAIL_PASS, ensure App Password is used"
+            }
+        
+        except (OSError, smtplib.SMTPException) as e:
+            status_info["providers"]["gmail"] = {
+                "status": "connection_failed",
+                "error": str(e),
+                "note": "Railway may have outbound SMTP network restrictions"
+            }
+        
+        except Exception as e:
+            status_info["providers"]["gmail"] = {
+                "status": "error",
+                "error": str(e)
+            }
+    else:
+        status_info["providers"]["gmail"] = {
+            "status": "not_configured",
+            "error": "Set GMAIL_USER and GMAIL_PASS in environment"
         }
     
-    except smtplib.SMTPAuthenticationError as e:
-        return {
-            "status": "authentication_failed",
-            "email": GMAIL_USER,
-            "error": str(e),
-            "action": "Check GMAIL_USER and GMAIL_PASS, ensure App Password is used"
-        }
+    # Determine overall status
+    if status_info["active_provider"]:
+        status_info["status"] = "healthy"
+        status_info["message"] = f"Email service ready via {status_info['active_provider']}"
+    elif RESEND_AVAILABLE or GMAIL_CONFIGURED:
+        status_info["status"] = "degraded"
+        status_info["message"] = "Email service available but not fully configured"
+    else:
+        status_info["status"] = "not_configured"
+        status_info["message"] = "No email provider configured"
     
-    except (OSError, smtplib.SMTPException) as e:
-        return {
-            "status": "connection_failed",
-            "error": str(e),
-            "action": "Check network connectivity to SMTP server",
-            "note": "Railway may have SMTP restrictions"
-        }
-    
-    except Exception as e:
-        return {
-            "status": "unknown_error",
-            "error": str(e)
-        }
+    return status_info
 
 
 # ========== Auth Endpoints ==========
