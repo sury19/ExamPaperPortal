@@ -1,0 +1,63 @@
+# Files and directories to ignore when deploying to Railway
+# This helps reduce deployment size and speed up builds
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv
+
+# Database files (use Railway PostgreSQL instead)
+*.db
+*.sqlite
+*.sqlite3
+
+# Environment files (use Railway environment variables instead)
+.env
+.env.local
+.env.*.local
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Uploads directory (will be created on Railway)
+uploads/
+!uploads/.gitkeep
+
+# Documentation
+*.md
+md_stuff/
+README.md
+EMAIL_SETUP.md
+ISSUES_AND_FIXES.md
+instructions.txt
+NEON_CONFIG.txt
+
+# Test files
+test_*.py
+*_test.py
+
+# Scripts
+setup.py
+setup_project.sh
+run_services.sh
+
+# Other
+admin.tsx
+dbConn.py
+
