@@ -243,11 +243,6 @@ class LoginRequest(BaseModel):
     password: str
     otp: str
 
-class RegisterVerifyResponse(BaseModel):
-    access_token: str
-    token_type: str
-    user: UserResponse
-
 class UserResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     
@@ -267,6 +262,11 @@ class UserResponse(BaseModel):
     id_card_path: Optional[str] = None
     id_verified: bool
     created_at: datetime
+
+class RegisterVerifyResponse(BaseModel):
+    access_token: str
+    token_type: str
+    user: UserResponse
 
 # OTP Schemas
 class SendOTPRequest(BaseModel):
