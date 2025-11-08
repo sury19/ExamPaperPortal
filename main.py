@@ -61,6 +61,8 @@ if not EMAIL_CONFIGURED:
     print("\n")
 elif RESEND_CONFIGURED:
     print("\n✓ Resend email service configured")
+    print(f"   API Key: {'*' * 10}{RESEND_API_KEY[-4:] if len(RESEND_API_KEY) > 4 else '****'}")
+    print(f"   From Email: {RESEND_FROM_EMAIL}")
     resend.api_key = RESEND_API_KEY
 elif SMTP_CONFIGURED:
     print(f"\n✓ SMTP email service configured: {SMTP_SERVER}:{SMTP_PORT}")
@@ -126,6 +128,8 @@ UPLOAD_DIR.mkdir(exist_ok=True)
 
 # In-memory OTP storage (use Redis for production)
 otp_storage = {}
+# In-memory registration data storage (use Redis for production)
+registration_storage = {}
 
 # ========== Enums ==========
 class PaperType(str, Enum):
@@ -223,6 +227,26 @@ class UserCreate(BaseModel):
     email: EmailStr
     name: str
     password: str
+
+class RegisterRequest(BaseModel):
+    email: EmailStr
+    name: str
+    password: str
+    confirm_password: str
+
+class RegisterVerifyOTPRequest(BaseModel):
+    email: EmailStr
+    otp: str
+
+class LoginRequest(BaseModel):
+    email: EmailStr
+    password: str
+    otp: str
+
+class RegisterVerifyResponse(BaseModel):
+    access_token: str
+    token_type: str
+    user: UserResponse
 
 class UserResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -534,16 +558,27 @@ def send_otp_email(email: str, otp: str):
         # Try Resend first (recommended for production)
         if RESEND_CONFIGURED:
             try:
+                # Ensure API key is set (in case it wasn't set at startup)
+                resend.api_key = RESEND_API_KEY
+                
+                # Send email using Resend SDK
                 email_response = resend.Emails.send({
                     "from": RESEND_FROM_EMAIL,
-                    "to": [email],
+                    "to": [email],  # User's email address from login/signup
                     "subject": "Your Paper Portal Verification Code",
                     "html": html_body
                 })
-                print(f"✓ Email sent successfully via Resend to {email}")
+                
+                print(f"✓ Email sent successfully via Resend")
+                print(f"   From: {RESEND_FROM_EMAIL}")
+                print(f"   To: {email}")
+                print(f"   OTP: {otp}")
                 return True
             except Exception as e:
                 print(f"❌ Resend error: {type(e).__name__}: {e}")
+                print(f"   From: {RESEND_FROM_EMAIL}")
+                print(f"   To: {email}")
+                print(f"   API Key configured: {'Yes' if RESEND_API_KEY else 'No'}")
                 print(f"   Falling back to SMTP...\n")
         
         # Fallback to SMTP if Resend fails or not configured
@@ -771,13 +806,26 @@ def email_health_check():
 # OTP Endpoints
 @app.post("/send-otp")
 def send_otp(request: SendOTPRequest, db: Session = Depends(get_db)):
-    """Send OTP to email for verification"""
+    """Send OTP to email for login verification"""
+    # Check if user exists
+    user = db.query(User).filter(User.email == request.email).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found. Please register first.")
+    
+    # Check if this is an admin (admins should use admin-login)
+    if user.is_admin:
+        raise HTTPException(
+            status_code=403,
+            detail="Admins must use /admin-login endpoint. OTP is not required for admin login."
+        )
+    
     otp = generate_otp()
     
-    # Store OTP with expiration (10 minutes)
+    # Store OTP with expiration (10 minutes) and type
     otp_storage[request.email] = {
         "otp": otp,
-        "expires_at": datetime.now(timezone.utc) + timedelta(minutes=10)
+        "expires_at": datetime.now(timezone.utc) + timedelta(minutes=10),
+        "type": "login"
     }
     
     # Send email
@@ -798,7 +846,9 @@ def send_otp(request: SendOTPRequest, db: Session = Depends(get_db)):
 
 @app.post("/verify-otp")
 def verify_otp(request: VerifyOTPRequest, db: Session = Depends(get_db)):
-    """Verify OTP and create/update student user (email-based access only)"""
+    """Legacy endpoint - Verify OTP for email-based login (passwordless) - DEPRECATED"""
+    # This endpoint is kept for backward compatibility but is deprecated
+    # New flow requires password + OTP for login
     if request.email not in otp_storage:
         raise HTTPException(status_code=400, detail="OTP not found or expired")
     
@@ -855,29 +905,130 @@ def verify_otp(request: VerifyOTPRequest, db: Session = Depends(get_db)):
     return {
         "access_token": access_token,
         "token_type": "bearer",
-        "user": UserResponse.from_orm(user)
+        "user": UserResponse.model_validate(user)
     }
 
-@app.post("/register", response_model=UserResponse)
-def register(user: UserCreate, db: Session = Depends(get_db)):
-    """Register a new user"""
-    # Check if user exists
-    db_user = db.query(User).filter(User.email == user.email).first()
+@app.post("/register")
+def register(request: RegisterRequest, db: Session = Depends(get_db)):
+    """Register a new user - Step 1: Validate and send OTP"""
+    # Validate password match
+    if request.password != request.confirm_password:
+        raise HTTPException(status_code=400, detail="Passwords do not match")
+    
+    # Check if user already exists
+    db_user = db.query(User).filter(User.email == request.email).first()
     if db_user:
         raise HTTPException(status_code=400, detail="Email already registered")
     
+    # Validate password strength (optional - add more validation if needed)
+    if len(request.password) < 6:
+        raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
+    
+    # Generate OTP
+    otp = generate_otp()
+    
+    # Store registration data temporarily
+    registration_storage[request.email] = {
+        "name": request.name,
+        "password": request.password,
+        "expires_at": datetime.now(timezone.utc) + timedelta(minutes=10)
+    }
+    
+    # Store OTP with expiration (10 minutes)
+    otp_storage[request.email] = {
+        "otp": otp,
+        "expires_at": datetime.now(timezone.utc) + timedelta(minutes=10),
+        "type": "registration"
+    }
+    
+    # Send email
+    email_sent = send_otp_email(request.email, otp)
+    
+    # Return response
+    response = {
+        "message": "OTP sent to your email. Please verify to complete registration.",
+        "email": request.email,
+        "email_configured": EMAIL_CONFIGURED,
+        "otp_sent": email_sent
+    }
+    
+    if not EMAIL_CONFIGURED:
+        response["warning"] = "Email not configured. OTP is shown in server logs. Configure RESEND_API_KEY or GMAIL_USER/GMAIL_PASS."
+    
+    return response
+
+@app.post("/register/verify-otp", response_model=RegisterVerifyResponse)
+def register_verify_otp(request: RegisterVerifyOTPRequest, db: Session = Depends(get_db)):
+    """Register a new user - Step 2: Verify OTP and create user"""
+    # Check if OTP exists
+    if request.email not in otp_storage:
+        raise HTTPException(status_code=400, detail="OTP not found or expired. Please register again.")
+    
+    stored_otp = otp_storage[request.email]
+    
+    # Check if this is a registration OTP
+    if stored_otp.get("type") != "registration":
+        raise HTTPException(status_code=400, detail="Invalid OTP type. Please use the registration endpoint.")
+    
+    # Check if OTP is expired
+    if datetime.now(timezone.utc) > stored_otp["expires_at"]:
+        del otp_storage[request.email]
+        if request.email in registration_storage:
+            del registration_storage[request.email]
+        raise HTTPException(status_code=400, detail="OTP has expired. Please register again.")
+    
+    # Check if OTP matches
+    if stored_otp["otp"] != request.otp:
+        raise HTTPException(status_code=400, detail="Invalid OTP")
+    
+    # Check if registration data exists
+    if request.email not in registration_storage:
+        del otp_storage[request.email]
+        raise HTTPException(status_code=400, detail="Registration data not found. Please register again.")
+    
+    reg_data = registration_storage[request.email]
+    
+    # Check if registration data is expired
+    if datetime.now(timezone.utc) > reg_data["expires_at"]:
+        del otp_storage[request.email]
+        del registration_storage[request.email]
+        raise HTTPException(status_code=400, detail="Registration session expired. Please register again.")
+    
+    # Check if user was created in the meantime
+    db_user = db.query(User).filter(User.email == request.email).first()
+    if db_user:
+        del otp_storage[request.email]
+        del registration_storage[request.email]
+        raise HTTPException(status_code=400, detail="Email already registered")
+    
     # Create new user
-    hashed_password = get_password_hash(user.password)
+    hashed_password = get_password_hash(reg_data["password"])
     new_user = User(
-        email=user.email,
-        name=user.name,
+        email=request.email,
+        name=reg_data["name"],
         password_hash=hashed_password,
-        is_admin=False
+        is_admin=False,
+        email_verified=True
     )
     db.add(new_user)
     db.commit()
     db.refresh(new_user)
-    return new_user
+    
+    # Clean up storage
+    del otp_storage[request.email]
+    del registration_storage[request.email]
+    
+    # Generate token
+    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    access_token = create_access_token(
+        data={"sub": new_user.email}, expires_delta=access_token_expires
+    )
+    
+    return {
+        "access_token": access_token,
+        "token_type": "bearer",
+        "user": UserResponse.model_validate(new_user)
+    }
 
 @app.post("/create-admin", response_model=UserResponse)
 def create_admin(user: UserCreate, db: Session = Depends(get_db)):
@@ -912,16 +1063,48 @@ def create_admin(user: UserCreate, db: Session = Depends(get_db)):
     return admin_user
 
 @app.post("/login", response_model=Token)
-def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
-    """Traditional login with email and password (for admins and legacy users)"""
-    user = db.query(User).filter(User.email == form_data.username).first()
-    if not user or not verify_password(form_data.password, user.password_hash):
+def login(request: LoginRequest, db: Session = Depends(get_db)):
+    """Login with email, password, and OTP"""
+    # Find user
+    user = db.query(User).filter(User.email == request.email).first()
+    if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect email or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
     
+    # Verify password first
+    if not verify_password(request.password, user.password_hash):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect email or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    
+    # Check if OTP exists
+    if request.email not in otp_storage:
+        raise HTTPException(status_code=400, detail="OTP not found or expired. Please request a new OTP.")
+    
+    stored_otp = otp_storage[request.email]
+    
+    # Check if this is a login OTP (not registration)
+    if stored_otp.get("type") == "registration":
+        raise HTTPException(status_code=400, detail="Invalid OTP type. Please use the login OTP.")
+    
+    # Check if OTP is expired
+    if datetime.now(timezone.utc) > stored_otp["expires_at"]:
+        del otp_storage[request.email]
+        raise HTTPException(status_code=400, detail="OTP has expired. Please request a new OTP.")
+    
+    # Check if OTP matches
+    if stored_otp["otp"] != request.otp:
+        raise HTTPException(status_code=400, detail="Invalid OTP")
+    
+    # Clean up OTP storage
+    del otp_storage[request.email]
+    
+    # Generate token
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = create_access_token(
         data={"sub": user.email}, expires_delta=access_token_expires
