@@ -29,14 +29,6 @@ try:
 except ImportError:
     RESEND_AVAILABLE = False
 
-# Import email service (nodemailer-like)
-try:
-    from email_service import send_otp_email as send_otp_email_nodemailer
-    NODEMAILER_AVAILABLE = True
-except ImportError:
-    NODEMAILER_AVAILABLE = False
-    def send_otp_email_nodemailer(to: str, otp: str) -> bool:
-        return False
 
 # Load environment variables
 load_dotenv()
@@ -422,8 +414,8 @@ def generate_otp():
 
 def send_otp_email(email: str, otp: str):
     """
-    Send OTP to email using nodemailer-like email service (SMTP).
-    Falls back to Resend if configured, otherwise uses SMTP.
+    Send OTP to email using Resend (primary) or SMTP (fallback).
+    Supports both testing (console output) and production (actual email sending).
     """
     try:
         # Always print to console for testing/debugging
@@ -432,21 +424,10 @@ def send_otp_email(email: str, otp: str):
         print(f"Expires in: 10 minutes")
         print(f"{'='*60}\n")
         
-        # Try nodemailer-like service first (SMTP) - Clean and simple like nodemailer
-        if NODEMAILER_AVAILABLE:
-            try:
-                result = send_otp_email_nodemailer(email, otp)
-                if result:
-                    print(f"✅ OTP sent via nodemailer-like service (SMTP)")
-                    return True
-            except Exception as e:
-                print(f"⚠️  Nodemailer service error: {e}")
-                print(f"   Falling back to Resend/SMTP...\n")
-        
         # If email is not configured, just use console output
         if not EMAIL_CONFIGURED:
             print(f"ℹ️  Email credentials not configured. OTP shown above.")
-            print(f"    Configure SMTP_SERVER, SMTP_PORT, SMTP_USER, SMTP_PASS in .env\n")
+            print(f"    Configure RESEND_API_KEY or SMTP_SERVER, SMTP_PORT, SMTP_USER, SMTP_PASS in .env\n")
             return True
         
         # Email HTML template
@@ -629,43 +610,16 @@ def send_otp_email(email: str, otp: str):
         # Try Resend first (recommended for production)
         if RESEND_CONFIGURED:
             try:
-                # Ensure API key is set (in case it wasn't set at startup)
-                resend.api_key = RESEND_API_KEY
-                
-                # Send email using Resend SDK
                 email_response = resend.Emails.send({
                     "from": RESEND_FROM_EMAIL,
-                    "to": [email],  # User's email address from login/signup
+                    "to": [email],
                     "subject": "Your Paper Portal Verification Code",
                     "html": html_body
                 })
-                
-                print(f"✓ Email sent successfully via Resend")
-                print(f"   From: {RESEND_FROM_EMAIL}")
-                print(f"   To: {email}")
-                print(f"   OTP: {otp}")
+                print(f"✓ Email sent successfully via Resend to {email}")
                 return True
             except Exception as e:
-                error_msg = str(e)
                 print(f"❌ Resend error: {type(e).__name__}: {e}")
-                print(f"   From: {RESEND_FROM_EMAIL}")
-                print(f"   To: {email}")
-                print(f"   API Key configured: {'Yes' if RESEND_API_KEY else 'No'}")
-                
-                # Check if it's the domain verification error
-                if "testing emails" in error_msg.lower() or "verify a domain" in error_msg.lower():
-                    print(f"\n   ⚠️  Resend limitation detected:")
-                    print(f"   The default 'onboarding@resend.dev' only allows sending to your own email.")
-                    print(f"   Solutions:")
-                    print(f"   1. Verify a domain at https://resend.com/domains and update RESEND_FROM_EMAIL")
-                    print(f"   2. Configure SMTP (Gmail) as fallback - see EMAIL_SETUP_GUIDE.md")
-                    print(f"   3. For Gmail SMTP, set these environment variables:")
-                    print(f"      SMTP_SERVER=smtp.gmail.com")
-                    print(f"      SMTP_PORT=587")
-                    print(f"      SMTP_USER=your-email@gmail.com")
-                    print(f"      SMTP_PASS=your-app-password")
-                    print(f"      (Get app password: https://myaccount.google.com/apppasswords)\n")
-                
                 print(f"   Falling back to SMTP...\n")
         
         # Fallback to SMTP if Resend fails or not configured
@@ -678,48 +632,34 @@ def send_otp_email(email: str, otp: str):
                 message.attach(MIMEText(html_body, "html"))
                 
                 # Send via SMTP with timeout
-                with smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=15) as server:
+                with smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=10) as server:
                     server.starttls()
                     server.login(SMTP_USER, SMTP_PASS)
                     server.send_message(message)
                 
-                print(f"✓ Email sent successfully via SMTP ({SMTP_SERVER}) to {email}")
+                print(f"✓ Email sent successfully via SMTP to {email}")
                 return True
                 
             except smtplib.SMTPAuthenticationError as e:
                 print(f"❌ SMTP authentication failed: {e}")
-                print(f"   Reason: Check SMTP_USER and SMTP_PASS in environment variables")
-                print(f"   Server: {SMTP_SERVER}:{SMTP_PORT}")
-                if "gmail.com" in SMTP_SERVER:
-                    print(f"   Note: For Gmail, use App Password (not regular password)")
-                    print(f"   Check: https://myaccount.google.com/apppasswords\n")
-                else:
-                    print(f"   Note: Verify your SMTP credentials are correct\n")
+                print(f"   Reason: Check SMTP_USER and SMTP_PASS credentials")
+                print(f"   Note: Use App Password (not regular password)")
+                print(f"   Check: https://myaccount.google.com/apppasswords\n")
                 return True
                 
-            except (smtplib.SMTPException, OSError, ConnectionError) as e:
-                print(f"❌ SMTP connection error: {type(e).__name__}: {e}")
-                print(f"   Server: {SMTP_SERVER}:{SMTP_PORT}")
-                print(f"   Note: Some cloud platforms (Render, Railway, etc.) may block SMTP connections")
-                print(f"   Recommendation: Use Resend API or a provider with SMTP relay (SendGrid, Mailgun)")
+            except (smtplib.SMTPException, OSError) as e:
+                print(f"❌ SMTP error: {type(e).__name__}: {e}")
+                print(f"   Note: Railway may have SMTP network restrictions")
+                print(f"   Recommendation: Use Resend instead")
                 print(f"   Get free API key at https://resend.com\n")
                 return True
             
             except Exception as e:
-                print(f"❌ Unexpected SMTP error: {type(e).__name__}: {e}\n")
+                print(f"❌ Unexpected error sending email: {type(e).__name__}: {e}\n")
                 return True
         
         # If we get here, no email service worked
-        print(f"⚠️  No email service available for sending")
-        print(f"\n   To fix this, configure SMTP (Gmail recommended):")
-        print(f"   1. Create Gmail App Password: https://myaccount.google.com/apppasswords")
-        print(f"   2. Set environment variables:")
-        print(f"      SMTP_SERVER=smtp.gmail.com")
-        print(f"      SMTP_PORT=587")
-        print(f"      SMTP_USER=your-email@gmail.com")
-        print(f"      SMTP_PASS=your-16-char-app-password")
-        print(f"   3. Restart your server")
-        print(f"\n   See EMAIL_SETUP_GUIDE.md for detailed instructions.\n")
+        print(f"⚠️  No email service available for sending\n")
         return True
     
     except Exception as e:
