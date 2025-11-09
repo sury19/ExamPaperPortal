@@ -6,5 +6,6 @@
 mkdir -p uploads
 
 # Start the FastAPI application
-uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}
+# Render requires binding to 0.0.0.0 and using PORT environment variable
+uvicorn main:app --host 0.0.0.0 --port ${PORT:-10000}
 

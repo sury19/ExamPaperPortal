@@ -63,7 +63,7 @@ if EMAIL_CONFIGURED:
     print(f"   1. Restart your backend server")
     print(f"   2. Test by sending an OTP (try login/register)")
     print(f"   3. Check server logs for email sending status")
-    print(f"   4. Visit http://localhost:8000/health/email for detailed status")
+    print(f"   4. Visit http://localhost:10000/health/email for detailed status (or use PORT env var if different)")
 else:
     print(f"   [X] Email service is NOT CONFIGURED")
     print(f"\n   To configure:")

@@ -117,18 +117,22 @@ This will create:
 ### 6. Start the Server
 
 ```bash
-uvicorn main:app --reload
+# For local development
+uvicorn main:app --host 0.0.0.0 --port ${PORT:-10000}
+
+# Or for Render deployment (uses PORT env var automatically)
+uvicorn main:app --host 0.0.0.0 --port ${PORT:-10000}
 ```
 
-Server will start at: `http://localhost:8000`
+Server will start at: `http://localhost:10000` (or use PORT environment variable)
 
 ## Usage
 
 ### API Documentation
 
 Access interactive API docs at:
-- Swagger UI: `http://localhost:8000/docs`
-- ReDoc: `http://localhost:8000/redoc`
+- Swagger UI: `http://localhost:10000/docs` (or use PORT env var)
+- ReDoc: `http://localhost:10000/redoc` (or use PORT env var)
 
 ### Admin Dashboard
 
@@ -149,7 +153,7 @@ The React admin dashboard is included in the artifacts. To use it:
 
 #### 1. Register a New User
 ```bash
-curl -X POST "http://localhost:8000/register" \
+curl -X POST "http://localhost:10000/register" \
   -H "Content-Type: application/json" \
   -d '{
     "email": "newstudent@uni.edu",
@@ -160,7 +164,7 @@ curl -X POST "http://localhost:8000/register" \
 
 #### 2. Login
 ```bash
-curl -X POST "http://localhost:8000/login" \
+curl -X POST "http://localhost:10000/login" \
   -H "Content-Type: application/x-www-form-urlencoded" \
   -d "username=admin@university.edu&password=admin123"
 ```
@@ -175,7 +179,7 @@ Response:
 
 #### 3. Upload a Paper (Student)
 ```bash
-curl -X POST "http://localhost:8000/papers/upload" \
+curl -X POST "http://localhost:10000/papers/upload" \
   -H "Authorization: Bearer YOUR_TOKEN" \
   -F "file=@midterm.pdf" \
   -F "course_id=1" \
@@ -187,20 +191,20 @@ curl -X POST "http://localhost:8000/papers/upload" \
 
 #### 4. Get Pending Papers (Admin)
 ```bash
-curl -X GET "http://localhost:8000/papers/pending" \
+curl -X GET "http://localhost:10000/papers/pending" \
   -H "Authorization: Bearer ADMIN_TOKEN"
 ```
 
 #### 5. Approve/Reject Paper (Admin)
 ```bash
 # Approve
-curl -X PATCH "http://localhost:8000/papers/1/review" \
+curl -X PATCH "http://localhost:10000/papers/1/review" \
   -H "Authorization: Bearer ADMIN_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"status": "approved"}'
 
 # Reject
-curl -X PATCH "http://localhost:8000/papers/1/review" \
+curl -X PATCH "http://localhost:10000/papers/1/review" \
   -H "Authorization: Bearer ADMIN_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
@@ -211,13 +215,13 @@ curl -X PATCH "http://localhost:8000/papers/1/review" \
 
 #### 6. Get Papers with Filters
 ```bash
-curl -X GET "http://localhost:8000/papers?course_id=1&paper_type=midterm&year=2024" \
+curl -X GET "http://localhost:10000/papers?course_id=1&paper_type=midterm&year=2024" \
   -H "Authorization: Bearer YOUR_TOKEN"
 ```
 
 #### 7. Create a Course (Admin)
 ```bash
-curl -X POST "http://localhost:8000/courses" \
+curl -X POST "http://localhost:10000/courses" \
   -H "Authorization: Bearer ADMIN_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
@@ -229,7 +233,7 @@ curl -X POST "http://localhost:8000/courses" \
 
 #### 8. Update Course (Admin)
 ```bash
-curl -X PUT "http://localhost:8000/courses/1" \
+curl -X PUT "http://localhost:10000/courses/1" \
   -H "Authorization: Bearer ADMIN_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
