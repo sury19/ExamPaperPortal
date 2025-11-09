@@ -781,8 +781,54 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Mount uploads directory as static files for direct serving
+# API endpoint to serve uploaded files (works better on cloud platforms)
+@app.get("/uploads/{filename:path}")
+async def serve_uploaded_file(filename: str):
+    """
+    Serve uploaded files (photos, ID cards, papers)
+    This endpoint works better on cloud platforms than static file mount
+    """
+    from fastapi.responses import FileResponse
+    
+    # Construct full file path
+    file_path = UPLOAD_DIR / filename
+    
+    # Security: Ensure file is within uploads directory (prevent directory traversal)
+    try:
+        file_path = file_path.resolve()
+        uploads_dir = UPLOAD_DIR.resolve()
+        if not str(file_path).startswith(str(uploads_dir)):
+            raise HTTPException(status_code=403, detail="Access denied")
+    except Exception:
+        raise HTTPException(status_code=403, detail="Invalid file path")
+    
+    # Check if file exists
+    if not file_path.exists() or not file_path.is_file():
+        raise HTTPException(status_code=404, detail="File not found")
+    
+    # Determine media type
+    ext = Path(filename).suffix.lower()
+    media_type = None
+    if ext in {'.jpg', '.jpeg'}:
+        media_type = 'image/jpeg'
+    elif ext == '.png':
+        media_type = 'image/png'
+    elif ext == '.pdf':
+        media_type = 'application/pdf'
+    elif ext == '.gif':
+        media_type = 'image/gif'
+    elif ext == '.webp':
+        media_type = 'image/webp'
+    
+    return FileResponse(
+        str(file_path),
+        media_type=media_type,
+        filename=Path(filename).name
+    )
+
+# Mount uploads directory as static files for direct serving (fallback for local development)
 # This allows frontend to access files directly via /uploads/{filename}
+# Note: On cloud platforms, the API endpoint above is preferred
 try:
     app.mount("/uploads", StaticFiles(directory=str(UPLOAD_DIR)), name="uploads")
 except Exception as e:
