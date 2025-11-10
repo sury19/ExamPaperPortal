@@ -849,7 +849,7 @@ async def startup_event():
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -1773,14 +1773,15 @@ async def upload_paper(
     if file_ext not in allowed_extensions:
         raise HTTPException(status_code=400, detail="Invalid file type")
     
-    # Save file
-    file_path = UPLOAD_DIR / f"{datetime.now(timezone.utc).timestamp()}_{file.filename}"
+    # Save file with timestamp prefix to avoid conflicts
+    timestamp = datetime.now(timezone.utc).timestamp()
+    file_path = UPLOAD_DIR / f"{timestamp}_{file.filename}"
     with file_path.open("wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
     
-    # Store only the filename (relative to uploads/) to avoid absolute path issues
+    # Store the full filename (with timestamp) to ensure we can find it later
     # This ensures files work across different environments (local, Render, etc.)
-    stored_file_path = file_path.name  # Just the filename, not the full path
+    stored_file_path = file_path.name  # Just the filename with timestamp, not the full path
     
     # Create paper record
     paper = Paper(
@@ -2001,15 +2002,22 @@ def delete_paper(paper_id: int, db: Session = Depends(get_db), admin: User = Dep
     return {"message": "Paper deleted successfully"}
 
 @app.get("/papers/{paper_id}/preview")
-def preview_paper(paper_id: int, db: Session = Depends(get_db)):
-    """Get paper preview metadata - Public access for approved papers"""
+def preview_paper(
+    paper_id: int, 
+    db: Session = Depends(get_db),
+    current_user: Optional[User] = Depends(get_current_user_optional)
+):
+    """Get paper preview metadata - Public access for approved papers, admin access for pending papers"""
     paper = db.query(Paper).filter(Paper.id == paper_id).first()
     if not paper:
         raise HTTPException(status_code=404, detail="Paper not found")
     
-    # Only approved papers can be previewed without authentication
+    # Check access permissions
+    # Admins can preview any paper (including pending)
+    # Non-admins can only preview approved papers
     if paper.status != SubmissionStatus.APPROVED:
-        raise HTTPException(status_code=403, detail="Paper not approved yet")
+        if not current_user or not current_user.is_admin:
+            raise HTTPException(status_code=403, detail="Paper not approved yet")
     
     # Extract filename from stored path and check if file exists
     stored_path = paper.file_path
@@ -2029,18 +2037,46 @@ def preview_paper(paper_id: int, db: Session = Depends(get_db)):
             # Already just filename or relative path without uploads/
             filename = Path(stored_path).name
     
-    # Try multiple possible file locations
-    possible_paths = [
-        UPLOAD_DIR / filename,  # Standard location: uploads/filename
-        Path(stored_path) if not os.path.isabs(stored_path) else None,  # Stored path as-is (if relative)
-    ]
+    # Try multiple possible file locations - prioritize exact stored path
+    possible_paths = []
     
-    # Only add UPLOAD_DIR / stored_path if stored_path doesn't already start with uploads/
-    if not os.path.isabs(stored_path) and not stored_path.startswith('uploads/') and not stored_path.startswith('uploads\\'):
-        possible_paths.append(UPLOAD_DIR / stored_path)
+    # First, try the stored_path exactly as it is in the database (most reliable)
+    if not os.path.isabs(stored_path):
+        if stored_path.startswith('uploads/') or stored_path.startswith('uploads\\'):
+            # Remove uploads/ prefix
+            clean_stored = stored_path.replace('uploads/', '').replace('uploads\\', '')
+            possible_paths.append(UPLOAD_DIR / clean_stored)
+        else:
+            # Stored path is just filename
+            possible_paths.append(UPLOAD_DIR / stored_path)
     
-    # Filter out None values
-    possible_paths = [p for p in possible_paths if p is not None]
+    # Second, try the extracted filename
+    if filename and filename != stored_path:
+        possible_paths.append(UPLOAD_DIR / filename)
+    
+    # Third, try to find file by matching the original filename (fallback for older records)
+    # This handles cases where stored_path might be just the original filename without timestamp
+    if filename and '_' not in filename:
+        # If no timestamp in filename, try to find file that ends with this filename
+        try:
+            if UPLOAD_DIR.exists():
+                for existing_file in UPLOAD_DIR.iterdir():
+                    if existing_file.is_file() and existing_file.name.endswith(filename):
+                        possible_paths.append(existing_file)
+                        break
+        except Exception:
+            pass
+    
+    # Filter out None values and duplicates while preserving order
+    seen = set()
+    unique_paths = []
+    for p in possible_paths:
+        if p is not None:
+            path_str = str(p)
+            if path_str not in seen:
+                seen.add(path_str)
+                unique_paths.append(p)
+    possible_paths = unique_paths
     
     # Try each possible path
     file_path = None
@@ -2138,18 +2174,46 @@ async def download_paper(
             # Already just filename or relative path without uploads/
             filename = Path(stored_path).name
     
-    # Try multiple possible file locations
-    possible_paths = [
-        UPLOAD_DIR / filename,  # Standard location: uploads/filename
-        Path(stored_path) if not os.path.isabs(stored_path) else None,  # Stored path as-is (if relative)
-    ]
+    # Try multiple possible file locations - prioritize exact stored path
+    possible_paths = []
     
-    # Only add UPLOAD_DIR / stored_path if stored_path doesn't already start with uploads/
-    if not os.path.isabs(stored_path) and not stored_path.startswith('uploads/') and not stored_path.startswith('uploads\\'):
-        possible_paths.append(UPLOAD_DIR / stored_path)
+    # First, try the stored_path exactly as it is in the database (most reliable)
+    if not os.path.isabs(stored_path):
+        if stored_path.startswith('uploads/') or stored_path.startswith('uploads\\'):
+            # Remove uploads/ prefix
+            clean_stored = stored_path.replace('uploads/', '').replace('uploads\\', '')
+            possible_paths.append(UPLOAD_DIR / clean_stored)
+        else:
+            # Stored path is just filename
+            possible_paths.append(UPLOAD_DIR / stored_path)
     
-    # Filter out None values
-    possible_paths = [p for p in possible_paths if p is not None]
+    # Second, try the extracted filename
+    if filename and filename != stored_path:
+        possible_paths.append(UPLOAD_DIR / filename)
+    
+    # Third, try to find file by matching the original filename (fallback for older records)
+    # This handles cases where stored_path might be just the original filename without timestamp
+    if filename and '_' not in filename:
+        # If no timestamp in filename, try to find file that ends with this filename
+        try:
+            if UPLOAD_DIR.exists():
+                for existing_file in UPLOAD_DIR.iterdir():
+                    if existing_file.is_file() and existing_file.name.endswith(filename):
+                        possible_paths.append(existing_file)
+                        break
+        except Exception:
+            pass
+    
+    # Filter out None values and duplicates while preserving order
+    seen = set()
+    unique_paths = []
+    for p in possible_paths:
+        if p is not None:
+            path_str = str(p)
+            if path_str not in seen:
+                seen.add(path_str)
+                unique_paths.append(p)
+    possible_paths = unique_paths
     
     # Try each possible path
     file_path = None
