@@ -22,6 +22,7 @@ import string
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+import asyncio
 
 # Try to import Resend (recommended for production email sending)
 try:
@@ -895,6 +896,22 @@ async def get_current_user_optional(
 # ========== FastAPI App ==========
 app = FastAPI(title="Paper Portal API", version="2.0.0")
 
+# Keep-alive background task to prevent auto-shutdown on free tier platforms
+async def keep_alive_task():
+    """Background task to keep server alive by maintaining active process"""
+    while True:
+        try:
+            await asyncio.sleep(30)  # Every 30 seconds
+            # Keep the process active - this prevents deployment platforms from thinking the service is idle
+            # The task itself keeps the event loop active, preventing auto-shutdown
+            pass
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            # Log error but continue the keep-alive loop
+            print(f"Keep-alive task error (non-critical): {e}")
+            await asyncio.sleep(30)
+
 # Startup event to log configuration
 @app.on_event("startup")
 async def startup_event():
@@ -906,6 +923,10 @@ async def startup_event():
     if not EMAIL_CONFIGURED:
         print(f"  └─ Set GMAIL_USER and GMAIL_PASS in .env to enable email sending")
     print("="*70 + "\n")
+    
+    # Start keep-alive task to prevent auto-shutdown
+    asyncio.create_task(keep_alive_task())
+    print("✓ Keep-alive task started to prevent automatic shutdown\n")
 
 app.add_middleware(
     CORSMiddleware,
@@ -924,10 +945,30 @@ async def serve_uploaded_file(filename: str):
     """
     from fastapi.responses import FileResponse
     
-    # Construct full file path
-    file_path = UPLOAD_DIR / filename
+    # Use helper function to find file (handles path variations from different databases)
+    file_path = find_file_in_uploads(filename)
     
-    # Security: Ensure file is within uploads directory (prevent directory traversal)
+    # If not found, try direct path as fallback
+    if not file_path or not file_path.exists():
+        # Try direct path construction
+        direct_path = UPLOAD_DIR / filename
+        try:
+            resolved_path = direct_path.resolve()
+            uploads_dir = UPLOAD_DIR.resolve()
+            # Security: Ensure file is within uploads directory
+            if str(resolved_path).startswith(str(uploads_dir)) and resolved_path.exists() and resolved_path.is_file():
+                file_path = resolved_path
+        except Exception:
+            pass
+    
+    # If still not found, return clear error
+    if not file_path or not file_path.exists():
+        raise HTTPException(
+            status_code=404, 
+            detail=f"File not found. The file '{filename}' may have been stored in a previous database and is no longer available."
+        )
+    
+    # Final security check
     try:
         file_path = file_path.resolve()
         uploads_dir = UPLOAD_DIR.resolve()
@@ -935,10 +976,6 @@ async def serve_uploaded_file(filename: str):
             raise HTTPException(status_code=403, detail="Access denied")
     except Exception:
         raise HTTPException(status_code=403, detail="Invalid file path")
-    
-    # Check if file exists
-    if not file_path.exists() or not file_path.is_file():
-        raise HTTPException(status_code=404, detail="File not found")
     
     # Determine media type
     ext = Path(filename).suffix.lower()
