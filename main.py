@@ -1411,7 +1411,8 @@ async def upload_photo(
     save_path = UPLOAD_DIR / f"photo_{current_user.id}_{int(datetime.now(timezone.utc).timestamp())}{ext}"
     with save_path.open("wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
-    current_user.photo_path = str(save_path)
+    # Store only filename to avoid absolute path issues
+    current_user.photo_path = save_path.name
     db.commit()
     db.refresh(current_user)
     return current_user
@@ -1430,7 +1431,8 @@ async def upload_id_card(
     save_path = UPLOAD_DIR / f"id_{current_user.id}_{int(datetime.now(timezone.utc).timestamp())}{ext}"
     with save_path.open("wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
-    current_user.id_card_path = str(save_path)
+    # Store only filename to avoid absolute path issues
+    current_user.id_card_path = save_path.name
     current_user.id_verified = False
     current_user.verified_by = None
     current_user.verified_at = None
@@ -1655,6 +1657,10 @@ async def upload_paper(
     with file_path.open("wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
     
+    # Store only the filename (relative to uploads/) to avoid absolute path issues
+    # This ensures files work across different environments (local, Render, etc.)
+    stored_file_path = file_path.name  # Just the filename, not the full path
+    
     # Create paper record
     paper = Paper(
         course_id=course.id,
@@ -1664,7 +1670,7 @@ async def upload_paper(
         paper_type=paper_type,
         year=year,
         semester=semester,
-        file_path=str(file_path),
+        file_path=stored_file_path,  # Store only filename
         file_name=file.filename,
         file_size=file_path.stat().st_size,
         status=SubmissionStatus.PENDING
@@ -1884,9 +1890,25 @@ def preview_paper(paper_id: int, db: Session = Depends(get_db)):
     if paper.status != SubmissionStatus.APPROVED:
         raise HTTPException(status_code=403, detail="Paper not approved yet")
     
-    # Check if file exists
-    if not os.path.exists(paper.file_path):
-        raise HTTPException(status_code=404, detail="File not found on server")
+    # Extract filename from stored path and check if file exists
+    stored_path = paper.file_path
+    if os.path.isabs(stored_path):
+        # Extract filename from absolute path
+        filename = Path(stored_path).name
+    else:
+        # Extract filename from relative path
+        filename = Path(stored_path).name
+        if 'uploads/' in stored_path or 'uploads\\' in stored_path:
+            filename = Path(stored_path.replace('uploads/', '').replace('uploads\\', '')).name
+    
+    # Check if file exists in current UPLOAD_DIR
+    file_path = UPLOAD_DIR / filename
+    if not file_path.exists():
+        # Try stored path as-is if it's relative
+        if not os.path.isabs(stored_path) and os.path.exists(stored_path):
+            file_path = Path(stored_path)
+        else:
+            raise HTTPException(status_code=404, detail=f"File not found on server. Expected: {file_path}")
     
     # Get MIME type
     mime_type = get_mime_type(paper.file_name)
@@ -1919,19 +1941,41 @@ async def download_paper(
             raise HTTPException(status_code=403, detail="Paper not approved yet")
     
     # Construct file path - handle both absolute and relative paths
-    file_path = paper.file_path
-    if not os.path.isabs(file_path):
-        # If relative path, try to resolve it
-        # First try as-is (might already be relative to uploads/)
-        if not os.path.exists(file_path):
-            # Try relative to UPLOAD_DIR
-            file_path = UPLOAD_DIR / file_path.replace('uploads/', '').replace('uploads\\', '')
-        else:
-            file_path = Path(file_path)
-    else:
-        file_path = Path(file_path)
+    # Extract filename from stored path (handles absolute paths from different environments)
+    stored_path = paper.file_path
     
-    # Resolve to absolute path
+    # Extract just the filename from the stored path
+    # This handles cases where absolute paths from different servers are stored
+    if os.path.isabs(stored_path):
+        # If it's an absolute path, extract just the filename
+        filename = Path(stored_path).name
+    else:
+        # If it's relative, extract filename (remove 'uploads/' prefix if present)
+        filename = Path(stored_path).name
+        # Remove 'uploads/' prefix if present
+        if 'uploads/' in stored_path or 'uploads\\' in stored_path:
+            filename = Path(stored_path.replace('uploads/', '').replace('uploads\\', '')).name
+    
+    # Reconstruct path relative to current UPLOAD_DIR
+    file_path = UPLOAD_DIR / filename
+    
+    # Try to find the file - check multiple possible locations
+    if not file_path.exists():
+        # Try with the stored path as-is (in case it's relative and correct)
+        if not os.path.isabs(stored_path) and os.path.exists(stored_path):
+            file_path = Path(stored_path)
+        else:
+            # Last attempt: try to find by filename in uploads directory
+            # This handles cases where files were moved or paths changed
+            potential_path = UPLOAD_DIR / filename
+            if not potential_path.exists():
+                raise HTTPException(
+                    status_code=404, 
+                    detail=f"File not found on server. Expected: {file_path}. Stored path: {stored_path}"
+                )
+            file_path = potential_path
+    
+    # Resolve to absolute path for security check
     try:
         file_path = file_path.resolve()
         # Security: Ensure file is within uploads directory
@@ -1942,9 +1986,12 @@ async def download_paper(
         print(f"Error resolving file path: {e}")
         raise HTTPException(status_code=404, detail="File path invalid")
     
-    # Check if file exists
+    # Final check if file exists
     if not file_path.exists() or not file_path.is_file():
-        raise HTTPException(status_code=404, detail=f"File not found on server: {file_path}")
+        raise HTTPException(
+            status_code=404, 
+            detail=f"File not found on server: {file_path}. Original stored path: {stored_path}"
+        )
     
     from fastapi.responses import FileResponse
     return FileResponse(str(file_path), filename=paper.file_name)
