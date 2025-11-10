@@ -644,24 +644,38 @@ This code expires in 10 minutes. If you didn't request this code, you can ignore
         # 0) Preferred: External Nodemailer service (if configured)
         if EMAIL_SERVICE_URL:
             try:
+                # Use SMTP_FROM_EMAIL if available, otherwise RESEND_FROM_EMAIL
+                from_email = SMTP_FROM_EMAIL if SMTP_FROM_EMAIL else RESEND_FROM_EMAIL
                 payload = {
                     "to": email,
-                    "from": RESEND_FROM_EMAIL,
+                    "from": from_email,
                     "subject": "Your Paper Portal Verification Code",
                     "html": html_body,
                     "text": text_body
                 }
+                print(f"📧 Attempting to send via External Email Service: {EMAIL_SERVICE_URL}")
                 with httpx.Client(timeout=10) as client:
                     r = client.post(f"{EMAIL_SERVICE_URL.rstrip('/')}/send-email", json=payload)
                     if r.status_code >= 200 and r.status_code < 300:
                         print(f"✓ Email sent successfully via External Mailer to {email}")
                         return True
                     else:
-                        print(f"❌ External Mailer error: {r.status_code} {r.text}")
+                        print(f"❌ External Mailer error: {r.status_code} - {r.text[:200]}")
                         print(f"   Falling back to Resend/SMTP...\n")
+            except httpx.TimeoutException:
+                print(f"❌ External Mailer timeout: Service at {EMAIL_SERVICE_URL} did not respond")
+                print(f"   Check if email service is running and accessible")
+                print(f"   Falling back to Resend/SMTP...\n")
+            except httpx.ConnectError:
+                print(f"❌ External Mailer connection failed: Cannot reach {EMAIL_SERVICE_URL}")
+                print(f"   Check if email service is running and EMAIL_SERVICE_URL is correct")
+                print(f"   Falling back to Resend/SMTP...\n")
             except Exception as e:
                 print(f"❌ External Mailer request failed: {type(e).__name__}: {e}")
                 print(f"   Falling back to Resend/SMTP...\n")
+        else:
+            print(f"ℹ️  EMAIL_SERVICE_URL not configured. Skipping external email service.")
+            print(f"   Set EMAIL_SERVICE_URL=http://localhost:4000 to use Node.js email service\n")
 
         # 1) Try Resend API
         if RESEND_CONFIGURED:
