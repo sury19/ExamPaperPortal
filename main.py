@@ -901,19 +901,21 @@ app = FastAPI(title="Paper Portal API", version="2.0.0")
 
 # Keep-alive background task to prevent auto-shutdown on free tier platforms
 async def keep_alive_task():
-    """Background task to keep server alive by maintaining active process"""
+    """Background task to keep server alive - maintains active event loop"""
     while True:
         try:
-            await asyncio.sleep(30)  # Every 30 seconds
-            # Keep the process active - this prevents deployment platforms from thinking the service is idle
-            # The task itself keeps the event loop active, preventing auto-shutdown
-            pass
+            # Sleep for 5 minutes (300 seconds)
+            # Render free tier spins down after 15 minutes of inactivity
+            # This keeps the process active, preventing idle detection
+            await asyncio.sleep(300)
+            # Log keep-alive heartbeat (this keeps the process active)
+            print("💓 Keep-alive heartbeat - service is active")
         except asyncio.CancelledError:
             break
         except Exception as e:
             # Log error but continue the keep-alive loop
             print(f"Keep-alive task error (non-critical): {e}")
-            await asyncio.sleep(30)
+            await asyncio.sleep(300)
 
 # Startup event to log configuration
 @app.on_event("startup")
@@ -1088,7 +1090,7 @@ except Exception as e:
 
 @app.get("/health")
 def health_check():
-    """Check API health and configuration status"""
+    """Check API health and configuration status - Also used for keep-alive"""
     # Test database connection
     db_status = "unknown"
     try:
@@ -1100,6 +1102,7 @@ def health_check():
     
     return {
         "status": "healthy",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
         "database": {
             "status": db_status,
             "url": DATABASE_URL.split("@")[-1] if "@" in DATABASE_URL else "local",
@@ -1111,6 +1114,15 @@ def health_check():
             "indexes": "configured (run add_indexes.py for existing databases)",
             "connection_pooling": True
         }
+    }
+
+@app.get("/wake")
+def wake_up():
+    """Wake-up endpoint - Simple endpoint to wake up the service from sleep"""
+    return {
+        "status": "awake",
+        "message": "Service is active",
+        "timestamp": datetime.now(timezone.utc).isoformat()
     }
 
 @app.get("/health/email")
