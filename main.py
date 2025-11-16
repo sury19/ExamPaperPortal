@@ -135,34 +135,13 @@ UPLOAD_DIR_STR = os.getenv("UPLOAD_DIR", "uploads")
 UPLOAD_DIR = Path(UPLOAD_DIR_STR)
 UPLOAD_DIR.mkdir(exist_ok=True)
 
-# In-memory OTP storage (use Redis for production)
-# Structure: { email: { otp, expires_at, type, last_sent_at } }
-otp_storage = {}
-# In-memory registration data storage (use Redis for production)
-registration_storage = {}
 # In-memory password reset data storage (use Redis for production)
 password_reset_storage = {}
 
-# Background task: Clean up expired OTPs and registration data
+# Background task: Clean up expired password reset data
 def cleanup_expired_data():
-    """Clean up expired OTPs and registration data"""
+    """Clean up expired password reset data"""
     current_time = datetime.now(timezone.utc)
-    
-    # Clean expired OTPs
-    expired_emails = [
-        email for email, data in otp_storage.items()
-        if current_time > data.get("expires_at", datetime.min.replace(tzinfo=timezone.utc))
-    ]
-    for email in expired_emails:
-        del otp_storage[email]
-    
-    # Clean expired registration data
-    expired_reg_emails = [
-        email for email, data in registration_storage.items()
-        if current_time > data.get("expires_at", datetime.min.replace(tzinfo=timezone.utc))
-    ]
-    for email in expired_reg_emails:
-        del registration_storage[email]
     
     # Clean expired password reset data
     expired_reset_emails = [
@@ -172,8 +151,8 @@ def cleanup_expired_data():
     for email in expired_reset_emails:
         del password_reset_storage[email]
     
-    if expired_emails or expired_reg_emails or expired_reset_emails:
-        print(f"🧹 Cleaned up {len(expired_emails)} expired OTPs, {len(expired_reg_emails)} expired registration sessions, and {len(expired_reset_emails)} expired password reset sessions")
+    if expired_reset_emails:
+        print(f"🧹 Cleaned up {len(expired_reset_emails)} expired password reset sessions")
 
 # ========== Enums ==========
 class PaperType(str, Enum):
@@ -288,14 +267,10 @@ class RegisterRequest(BaseModel):
     password: str
     confirm_password: str
 
-class RegisterVerifyOTPRequest(BaseModel):
-    email: EmailStr
-    otp: str
 
 class LoginRequest(BaseModel):
     email: EmailStr
     password: str
-    otp: str
 
 # Helper function for normalizing file paths (needed by UserResponse)
 def normalize_file_path(file_path: Optional[str]) -> Optional[str]:
@@ -390,14 +365,7 @@ class RegisterVerifyResponse(BaseModel):
     token_type: str
     user: "UserResponse"
 
-# OTP Schemas
-class SendOTPRequest(BaseModel):
-    email: EmailStr
-
-class VerifyOTPRequest(BaseModel):
-    email: EmailStr
-    otp: str
-
+# Password Reset Schemas
 class ForgotPasswordRequest(BaseModel):
     email: EmailStr
 
@@ -1224,129 +1192,17 @@ def email_health_check():
 
 # ========== Auth Endpoints ==========
 
-# OTP Endpoints
-@app.post("/send-otp")
-def send_otp(request: SendOTPRequest, db: Session = Depends(get_db)):
-    """Send OTP to email for login verification"""
-    # Check if user exists
-    user = db.query(User).filter(User.email == request.email).first()
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found. Please register first.")
-    
-    # Check if this is an admin (admins should use admin-login)
-    if user.is_admin:
-        raise HTTPException(
-            status_code=403,
-            detail="Admins must use /admin-login endpoint. OTP is not required for admin login."
-        )
-    
-    # Cooldown: prevent rapid re-sends (e.g., 60 seconds)
-    cooldown_seconds = 60
-    existing = otp_storage.get(request.email)
-    if existing and "last_sent_at" in existing:
-        try:
-            seconds_since_last = (datetime.now(timezone.utc) - existing["last_sent_at"]).total_seconds()
-            if seconds_since_last < cooldown_seconds:
-                raise HTTPException(
-                    status_code=429,
-                    detail=f"OTP already sent recently. Please wait {int(cooldown_seconds - seconds_since_last)} seconds."
-                )
-        except Exception:
-            pass
-    
-    otp = generate_otp()
-    
-    # Store OTP with expiration (10 minutes) and type
-    otp_storage[request.email] = {
-        "otp": otp,
-        "expires_at": datetime.now(timezone.utc) + timedelta(minutes=10),
-        "type": "login",
-        "last_sent_at": datetime.now(timezone.utc)
-    }
-    
-    # Send email
-    email_sent = send_otp_email(request.email, otp)
-    
-    # Return response with email status
-    response = {
-        "message": "OTP sent to your email" if EMAIL_CONFIGURED else "OTP generated (check console/logs for code)",
-        "email": request.email,
-        "email_configured": EMAIL_CONFIGURED,
-        "otp_sent": email_sent
-    }
-    
-    if not EMAIL_CONFIGURED:
-        response["warning"] = "Email not configured. OTP is shown in server logs. Configure RESEND_API_KEY or GMAIL_USER/GMAIL_PASS."
-    
-    return response
 
-@app.post("/verify-otp")
-def verify_otp(request: VerifyOTPRequest, db: Session = Depends(get_db)):
-    """Legacy endpoint - Verify OTP for email-based login (passwordless) - DEPRECATED"""
-    # This endpoint is kept for backward compatibility but is deprecated
-    # New flow requires password + OTP for login
-    if request.email not in otp_storage:
-        raise HTTPException(status_code=400, detail="OTP not found or expired")
-    
-    stored_otp = otp_storage[request.email]
-    
-    # Check if OTP is expired
-    if datetime.now(timezone.utc) > stored_otp["expires_at"]:
-        del otp_storage[request.email]
-        raise HTTPException(status_code=400, detail="OTP has expired")
-    
-    # Check if OTP matches
-    if stored_otp["otp"] != request.otp:
-        raise HTTPException(status_code=400, detail="Invalid OTP")
-    
-    # Check if this email belongs to an admin (admins cannot use OTP login)
-    existing_user = db.query(User).filter(User.email == request.email).first()
-    if existing_user and existing_user.is_admin:
-        del otp_storage[request.email]
-        raise HTTPException(
-            status_code=403, 
-            detail="Admins must use traditional email/password login at /admin-login"
-        )
-    
-    # Mark email as verified in storage
-    del otp_storage[request.email]
-    
-    # Get or create student user (without password for email-based login)
-    if not existing_user:
-        # Create new student user with email-verified access
-        new_user = User(
-            email=request.email,
-            name=request.email.split('@')[0],  # Use email prefix as name
-            password_hash=get_password_hash(f"otp-verified-{request.email}"),  # Dummy password
-            is_admin=False,
-            email_verified=True
-        )
-        db.add(new_user)
-        db.commit()
-        db.refresh(new_user)
-        user = new_user
-    else:
-        # Update existing student user - mark email as verified
-        existing_user.email_verified = True
-        db.commit()
-        db.refresh(existing_user)
-        user = existing_user
-    
-    # Generate token
-    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    access_token = create_access_token(
-        data={"sub": user.email}, expires_delta=access_token_expires
-    )
-    
-    return {
-        "access_token": access_token,
-        "token_type": "bearer",
-        "user": UserResponse.model_validate(user)
-    }
-
-@app.post("/register")
+@app.post("/register", response_model=RegisterVerifyResponse)
 def register(request: RegisterRequest, db: Session = Depends(get_db)):
-    """Register a new user - Step 1: Validate and send OTP"""
+    """Register a new user - Create account directly"""
+    # Validate email domain - must be @jklu.edu.in
+    if not request.email.endswith("@jklu.edu.in"):
+        raise HTTPException(
+            status_code=400, 
+            detail="Only @jklu.edu.in email addresses are allowed for registration"
+        )
+    
     # Validate password match
     if request.password != request.confirm_password:
         raise HTTPException(status_code=400, detail="Passwords do not match")
@@ -1360,103 +1216,11 @@ def register(request: RegisterRequest, db: Session = Depends(get_db)):
     if len(request.password) < 6:
         raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
     
-    # Cooldown for registration OTP (avoid spamming)
-    cooldown_seconds = 60
-    existing = otp_storage.get(request.email)
-    if existing and existing.get("type") == "registration" and "last_sent_at" in existing:
-        try:
-            seconds_since_last = (datetime.now(timezone.utc) - existing["last_sent_at"]).total_seconds()
-            if seconds_since_last < cooldown_seconds:
-                raise HTTPException(
-                    status_code=429,
-                    detail=f"OTP already sent recently. Please wait {int(cooldown_seconds - seconds_since_last)} seconds."
-                )
-        except Exception:
-            pass
-
-    # Generate OTP
-    otp = generate_otp()
-    
-    # Store registration data temporarily
-    registration_storage[request.email] = {
-        "name": request.name,
-        "password": request.password,
-        "expires_at": datetime.now(timezone.utc) + timedelta(minutes=10)
-    }
-    
-    # Store OTP with expiration (10 minutes)
-    otp_storage[request.email] = {
-        "otp": otp,
-        "expires_at": datetime.now(timezone.utc) + timedelta(minutes=10),
-        "type": "registration",
-        "last_sent_at": datetime.now(timezone.utc)
-    }
-    
-    # Send email
-    email_sent = send_otp_email(request.email, otp)
-    
-    # Return response
-    response = {
-        "message": "OTP sent to your email. Please verify to complete registration.",
-        "email": request.email,
-        "email_configured": EMAIL_CONFIGURED,
-        "otp_sent": email_sent
-    }
-    
-    if not EMAIL_CONFIGURED:
-        response["warning"] = "Email not configured. OTP is shown in server logs. Configure RESEND_API_KEY or GMAIL_USER/GMAIL_PASS."
-    
-    return response
-
-@app.post("/register/verify-otp", response_model=RegisterVerifyResponse)
-def register_verify_otp(request: RegisterVerifyOTPRequest, db: Session = Depends(get_db)):
-    """Register a new user - Step 2: Verify OTP and create user"""
-    # Check if OTP exists
-    if request.email not in otp_storage:
-        raise HTTPException(status_code=400, detail="OTP not found or expired. Please register again.")
-    
-    stored_otp = otp_storage[request.email]
-    
-    # Check if this is a registration OTP
-    if stored_otp.get("type") != "registration":
-        raise HTTPException(status_code=400, detail="Invalid OTP type. Please use the registration endpoint.")
-    
-    # Check if OTP is expired
-    if datetime.now(timezone.utc) > stored_otp["expires_at"]:
-        del otp_storage[request.email]
-        if request.email in registration_storage:
-            del registration_storage[request.email]
-        raise HTTPException(status_code=400, detail="OTP has expired. Please register again.")
-    
-    # Check if OTP matches
-    if stored_otp["otp"] != request.otp:
-        raise HTTPException(status_code=400, detail="Invalid OTP")
-    
-    # Check if registration data exists
-    if request.email not in registration_storage:
-        del otp_storage[request.email]
-        raise HTTPException(status_code=400, detail="Registration data not found. Please register again.")
-    
-    reg_data = registration_storage[request.email]
-    
-    # Check if registration data is expired
-    if datetime.now(timezone.utc) > reg_data["expires_at"]:
-        del otp_storage[request.email]
-        del registration_storage[request.email]
-        raise HTTPException(status_code=400, detail="Registration session expired. Please register again.")
-    
-    # Check if user was created in the meantime
-    db_user = db.query(User).filter(User.email == request.email).first()
-    if db_user:
-        del otp_storage[request.email]
-        del registration_storage[request.email]
-        raise HTTPException(status_code=400, detail="Email already registered")
-    
-    # Create new user
-    hashed_password = get_password_hash(reg_data["password"])
+    # Create new user directly
+    hashed_password = get_password_hash(request.password)
     new_user = User(
         email=request.email,
-        name=reg_data["name"],
+        name=request.name,
         password_hash=hashed_password,
         is_admin=False,
         email_verified=True
@@ -1464,10 +1228,6 @@ def register_verify_otp(request: RegisterVerifyOTPRequest, db: Session = Depends
     db.add(new_user)
     db.commit()
     db.refresh(new_user)
-    
-    # Clean up storage
-    del otp_storage[request.email]
-    del registration_storage[request.email]
     
     # Generate token
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
@@ -1480,6 +1240,7 @@ def register_verify_otp(request: RegisterVerifyOTPRequest, db: Session = Depends
         "token_type": "bearer",
         "user": UserResponse.model_validate(new_user)
     }
+
 
 @app.post("/create-admin", response_model=UserResponse)
 def create_admin(user: UserCreate, db: Session = Depends(get_db)):
@@ -1515,7 +1276,14 @@ def create_admin(user: UserCreate, db: Session = Depends(get_db)):
 
 @app.post("/login", response_model=Token)
 def login(request: LoginRequest, db: Session = Depends(get_db)):
-    """Login with email, password, and OTP"""
+    """Login with email and password"""
+    # Validate email domain - must be @jklu.edu.in
+    if not request.email.endswith("@jklu.edu.in"):
+        raise HTTPException(
+            status_code=400, 
+            detail="Only @jklu.edu.in email addresses are allowed for login"
+        )
+    
     # Find user
     user = db.query(User).filter(User.email == request.email).first()
     if not user:
@@ -1525,35 +1293,13 @@ def login(request: LoginRequest, db: Session = Depends(get_db)):
             headers={"WWW-Authenticate": "Bearer"},
         )
     
-    # Verify password first
+    # Verify password
     if not verify_password(request.password, user.password_hash):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect email or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    
-    # Check if OTP exists
-    if request.email not in otp_storage:
-        raise HTTPException(status_code=400, detail="OTP not found or expired. Please request a new OTP.")
-    
-    stored_otp = otp_storage[request.email]
-    
-    # Check if this is a login OTP (not registration)
-    if stored_otp.get("type") == "registration":
-        raise HTTPException(status_code=400, detail="Invalid OTP type. Please use the login OTP.")
-    
-    # Check if OTP is expired
-    if datetime.now(timezone.utc) > stored_otp["expires_at"]:
-        del otp_storage[request.email]
-        raise HTTPException(status_code=400, detail="OTP has expired. Please request a new OTP.")
-    
-    # Check if OTP matches
-    if stored_otp["otp"] != request.otp:
-        raise HTTPException(status_code=400, detail="Invalid OTP")
-    
-    # Clean up OTP storage
-    del otp_storage[request.email]
     
     # Generate token
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
@@ -1579,7 +1325,7 @@ def admin_login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = 
     if not user.is_admin:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="This endpoint is for administrators only. Students should use OTP verification."
+            detail="This endpoint is for administrators only. Students should use the regular login endpoint."
         )
     
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
@@ -1687,10 +1433,6 @@ def reset_password(request: ResetPasswordRequest, db: Session = Depends(get_db))
 
 # ========== Profile Endpoints ==========
 class ProfileUpdate(BaseModel):
-    age: Optional[int] = None
-    year: Optional[str] = None
-    university: Optional[str] = None
-    department: Optional[str] = None
     roll_no: Optional[str] = None
     student_id: Optional[str] = None
 
@@ -1705,28 +1447,6 @@ def update_profile(update: ProfileUpdate, db: Session = Depends(get_db), current
     db.commit()
     db.refresh(user)
     return user
-
-
-@app.post("/profile/photo", response_model=UserResponse)
-async def upload_photo(
-    file: UploadFile = File(...),
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    allowed = {".jpg", ".jpeg", ".png", ".webp"}
-    ext = Path(file.filename).suffix.lower()
-    if ext not in allowed:
-        raise HTTPException(status_code=400, detail="Invalid image type")
-    
-    # Read file content into memory
-    file_content = await file.read()
-    
-    # Store file data in database
-    current_user.photo_data = file_content
-    current_user.photo_path = f"photo_{current_user.id}_{int(datetime.now(timezone.utc).timestamp())}{ext}"  # Keep for reference
-    db.commit()
-    db.refresh(current_user)
-    return current_user
 
 
 @app.post("/profile/id-card", response_model=UserResponse)
