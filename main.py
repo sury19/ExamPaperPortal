@@ -4,7 +4,7 @@ from fastapi import FastAPI, File, UploadFile, Depends, HTTPException, Query, Fo
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm, HTTPBearer, HTTPAuthorizationCredentials
-from sqlalchemy import create_engine, Column, Integer, String, Boolean, ForeignKey, Text, Enum as SQLEnum, DateTime, text, Index, or_, LargeBinary, JSON
+from sqlalchemy import create_engine, Column, Integer, String, Boolean, ForeignKey, Text, Enum as SQLEnum, DateTime, text, Index, or_, LargeBinary, JSON, inspect
 from sqlalchemy.orm import declarative_base, Session, sessionmaker, relationship, joinedload
 from pydantic import BaseModel, EmailStr, ConfigDict, field_validator
 from typing import Optional, List
@@ -122,6 +122,42 @@ except Exception as e:
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
+
+
+def ensure_column_exists(
+    engine,
+    table_name: str,
+    column_name: str,
+    column_type_by_dialect: dict[str, str],
+) -> None:
+    """
+    Ensure a column exists on the specified table. Adds the column if missing.
+    This provides a lightweight alternative to migrations for critical fixes.
+    """
+    try:
+        inspector = inspect(engine)
+        existing_columns = {col["name"] for col in inspector.get_columns(table_name)}
+    except Exception as exc:
+        print(f"⚠️  Could not inspect table '{table_name}': {exc}")
+        return
+
+    if column_name in existing_columns:
+        return
+
+    dialect = engine.dialect.name
+    column_sql = column_type_by_dialect.get(dialect, column_type_by_dialect.get("default"))
+
+    if not column_sql:
+        print(f"⚠️  No column definition provided for dialect '{dialect}' on table '{table_name}'")
+        return
+
+    alter_statement = f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_sql}"
+    try:
+        with engine.begin() as conn:
+            conn.execute(text(alter_statement))
+        print(f"✅ Added missing column '{column_name}' to '{table_name}' ({dialect})")
+    except Exception as exc:
+        print(f"⚠️  Failed to add column '{column_name}' to '{table_name}': {exc}")
 
 # Password hashing
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -247,8 +283,19 @@ class Paper(Base):
         Index('idx_paper_type_year', 'paper_type', 'year'),
     )
 
-# Create tables
+# Create tables (and backfill critical columns if they were added after deployment)
 Base.metadata.create_all(bind=engine)
+
+JSON_COLUMN_SQL = {
+    "postgresql": "JSONB",
+    "sqlite": "TEXT",
+    "mysql": "JSON",
+    "mssql": "NVARCHAR(MAX)",
+    "default": "JSON",
+}
+
+ensure_column_exists(engine, "users", "admin_feedback", JSON_COLUMN_SQL)
+ensure_column_exists(engine, "papers", "admin_feedback", JSON_COLUMN_SQL)
 
 # ========== Pydantic Schemas ==========
 class Token(BaseModel):
