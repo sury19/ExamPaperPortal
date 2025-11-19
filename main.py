@@ -1805,17 +1805,14 @@ def get_papers(
     """Get papers with filters"""
     query = db.query(Paper)
     
-    # Non-admins can only see their own papers (approved or pending)
+    # Non-admins (logged-in students) can see:
+    # - All approved papers (from any user)
+    # - Their own papers (pending, approved, or rejected)
     if not current_user.is_admin:
-        # Students should only see papers they uploaded
-        # Explicitly filter by user ID and exclude NULL values
-        query = query.filter(Paper.uploaded_by == current_user.id)
-        query = query.filter(Paper.uploaded_by.isnot(None))  # Exclude NULL values
-        # Only show approved papers (or pending for their own uploads)
         query = query.filter(
             or_(
-                Paper.status == SubmissionStatus.APPROVED,
-                Paper.status == SubmissionStatus.PENDING
+                Paper.status == SubmissionStatus.APPROVED,  # All approved papers
+                Paper.uploaded_by == current_user.id  # Or their own papers (any status)
             )
         )
     elif status:
@@ -2021,9 +2018,12 @@ def preview_paper(
     
     # Check access permissions
     # Admins can preview any paper (including pending)
-    # Non-admins can only preview approved papers
+    # Logged-in users can preview approved papers or their own papers
+    # Non-logged-in users can only preview approved papers
     if paper.status != SubmissionStatus.APPROVED:
-        if not current_user or not current_user.is_admin:
+        if not current_user:
+            raise HTTPException(status_code=403, detail="Paper not approved yet. Please login to access.")
+        if not current_user.is_admin and paper.uploaded_by != current_user.id:
             raise HTTPException(status_code=403, detail="Paper not approved yet")
     
     # Check if file exists in database
@@ -2063,9 +2063,12 @@ async def download_paper(
     
     # Check access permissions
     # Admins can download any paper (including pending)
-    # Non-admins can only download approved papers
+    # Logged-in users can download approved papers or their own papers
+    # Non-logged-in users can only download approved papers
     if paper.status != SubmissionStatus.APPROVED:
-        if not current_user or not current_user.is_admin:
+        if not current_user:
+            raise HTTPException(status_code=403, detail="Paper not approved yet. Please login to access.")
+        if not current_user.is_admin and paper.uploaded_by != current_user.id:
             raise HTTPException(status_code=403, detail="Paper not approved yet")
     
     # Check if file exists in database
