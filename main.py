@@ -1714,6 +1714,7 @@ async def upload_paper(
     file: UploadFile = File(...),
     course_id: Optional[int] = Form(None),
     course_code: Optional[str] = Form(None),
+    course_name: Optional[str] = Form(None),
     title: str = Form(...),
     paper_type: PaperType = Form(...),
     description: Optional[str] = Form(None),
@@ -1742,10 +1743,13 @@ async def upload_paper(
         # Check if course exists by code
         course = db.query(Course).filter(Course.code == course_code).first()
         if not course:
+            normalized_name = (course_name or course_code).strip()
+            if not normalized_name:
+                normalized_name = course_code
             # Create new course if it doesn't exist
             course = Course(
                 code=course_code,
-                name=course_code,  # Use code as name if not provided
+                name=normalized_name,
                 description=f"Auto-created during paper upload"
             )
             db.add(course)
