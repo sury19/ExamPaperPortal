@@ -1,9 +1,10 @@
 # main.py
 from __future__ import annotations  # Enable forward references
-from fastapi import FastAPI, File, UploadFile, Depends, HTTPException, Query, Form, status
+from fastapi import FastAPI, File, UploadFile, Depends, HTTPException, Query, Form, status, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm, HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.middleware.gzip import GZipMiddleware
 from sqlalchemy import create_engine, Column, Integer, String, Boolean, ForeignKey, Text, Enum as SQLEnum, DateTime, text, Index, or_, LargeBinary, JSON, inspect
 from sqlalchemy.orm import declarative_base, Session, sessionmaker, relationship, joinedload
 from pydantic import BaseModel, EmailStr, ConfigDict, field_validator
@@ -24,6 +25,8 @@ import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import asyncio
+from functools import lru_cache
+from time import time
 
 # Try to import Resend (recommended for production email sending)
 try:
@@ -189,6 +192,37 @@ UPLOAD_DIR.mkdir(exist_ok=True)
 
 # In-memory password reset data storage (use Redis for production)
 password_reset_storage = {}
+
+# Simple in-memory cache for frequently accessed data (use Redis for production)
+_cache = {}
+_cache_ttl = {
+    'courses': 300,  # 5 minutes
+    'public_papers': 60,  # 1 minute
+    'dashboard_stats': 120,  # 2 minutes
+}
+
+def get_cached(key: str):
+    """Get cached value if not expired"""
+    if key in _cache:
+        value, expiry = _cache[key]
+        if time() < expiry:
+            return value
+        else:
+            del _cache[key]
+    return None
+
+def set_cached(key: str, value, ttl: int = 60):
+    """Set cached value with TTL"""
+    _cache[key] = (value, time() + ttl)
+
+def clear_cache(pattern: str = None):
+    """Clear cache entries matching pattern, or all if pattern is None"""
+    if pattern:
+        keys_to_delete = [k for k in _cache.keys() if pattern in k]
+        for k in keys_to_delete:
+            del _cache[k]
+    else:
+        _cache.clear()
 
 # Background task: Clean up expired password reset data
 def cleanup_expired_data():
@@ -1001,6 +1035,32 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Add GZip compression for better performance
+app.add_middleware(GZipMiddleware, minimum_size=1000)
+
+# Request logging middleware for error tracking
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    """Log requests, especially 4xx errors for debugging"""
+    start_time = time()
+    response = await call_next(request)
+    process_time = time() - start_time
+    
+    # Log 4xx errors with details
+    if 400 <= response.status_code < 500:
+        print(f"⚠️ 4xx Error: {request.method} {request.url.path} - Status: {response.status_code} - Time: {process_time:.3f}s")
+        print(f"   Query params: {dict(request.query_params)}")
+        if request.headers.get("authorization"):
+            print(f"   Auth: Present")
+        else:
+            print(f"   Auth: Missing")
+    
+    # Log slow requests (>1s)
+    if process_time > 1.0:
+        print(f"🐌 Slow Request: {request.method} {request.url.path} - Time: {process_time:.3f}s")
+    
+    return response
+
 # API endpoint to serve uploaded files (works better on cloud platforms)
 @app.get("/uploads/{filename:path}")
 async def serve_uploaded_file(filename: str, db: Session = Depends(get_db)):
@@ -1617,7 +1677,12 @@ def verify_user(user_id: int, action: VerifyAction, db: Session = Depends(get_db
 # ========== Admin Dashboard ==========
 @app.get("/admin/dashboard", response_model=DashboardStats)
 def get_dashboard_stats(db: Session = Depends(get_db), admin: User = Depends(require_admin)):
-    """Get dashboard statistics for admin"""
+    """Get dashboard statistics for admin - cached for 2 minutes"""
+    cache_key = "dashboard_stats"
+    cached = get_cached(cache_key)
+    if cached is not None:
+        return cached
+    
     stats = DashboardStats(
         total_papers=db.query(Paper).count(),
         pending_papers=db.query(Paper).filter(Paper.status == SubmissionStatus.PENDING).count(),
@@ -1626,6 +1691,7 @@ def get_dashboard_stats(db: Session = Depends(get_db), admin: User = Depends(req
         total_courses=db.query(Course).count(),
         total_users=db.query(User).count()
     )
+    set_cached(cache_key, stats, _cache_ttl['dashboard_stats'])
     return stats
 
 # ========== Course Endpoints ==========
@@ -1641,12 +1707,21 @@ def create_course(course: CourseCreate, db: Session = Depends(get_db), admin: Us
     db.add(db_course)
     db.commit()
     db.refresh(db_course)
+    # Clear courses cache
+    clear_cache("courses")
     return db_course
 
 @app.get("/courses", response_model=List[CourseResponse])
 def get_courses(db: Session = Depends(get_db)):
-    """Get all courses"""
-    return db.query(Course).order_by(Course.code).all()
+    """Get all courses - cached for 5 minutes"""
+    cache_key = "courses_all"
+    cached = get_cached(cache_key)
+    if cached is not None:
+        return cached
+    
+    courses = db.query(Course).order_by(Course.code).all()
+    set_cached(cache_key, courses, _cache_ttl['courses'])
+    return courses
 
 @app.post("/courses/check-or-create")
 def check_or_create_course(
@@ -1836,6 +1911,10 @@ async def upload_paper(
     db.commit()
     db.refresh(paper)
     
+    # Clear public papers cache since new paper was added
+    clear_cache("public_papers")
+    clear_cache("dashboard_stats")
+    
     return {"message": "Paper uploaded successfully and pending approval", "paper_id": paper.id}
 
 @app.get("/papers", response_model=List[PaperResponse])
@@ -1905,7 +1984,13 @@ def get_public_papers(
     department: Optional[str] = None,
     db: Session = Depends(get_db)
 ):
-    """Get all approved papers (public access, no authentication required)"""
+    """Get all approved papers (public access, no authentication required) - cached for 1 minute"""
+    # Create cache key based on filters
+    cache_key = f"public_papers_{course_id}_{paper_type}_{year}_{semester}_{department}"
+    cached = get_cached(cache_key)
+    if cached is not None:
+        return cached
+    
     query = db.query(Paper).filter(Paper.status == SubmissionStatus.APPROVED)
     
     # Apply filters
@@ -1925,7 +2010,10 @@ def get_public_papers(
         joinedload(Paper.course),
         joinedload(Paper.uploader)
     ).order_by(Paper.uploaded_at.desc()).all()
-    return [format_paper_response(paper, False) for paper in papers]
+    
+    result = [format_paper_response(paper, False) for paper in papers]
+    set_cached(cache_key, result, _cache_ttl['public_papers'])
+    return result
 
 @app.get("/papers/{paper_id}", response_model=PaperResponse)
 def get_paper(paper_id: int, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
@@ -1980,6 +2068,10 @@ def review_paper(
         paper.admin_feedback = None
     
     db.commit()
+    
+    # Clear caches when paper status changes
+    clear_cache("public_papers")
+    clear_cache("dashboard_stats")
     
     return {"message": f"Paper {review.status.value} successfully"}
 
