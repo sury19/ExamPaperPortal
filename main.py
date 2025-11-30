@@ -10,6 +10,7 @@ from pydantic import BaseModel, EmailStr, ConfigDict, field_validator
 from typing import Optional, List
 from datetime import datetime, timedelta, timezone
 from enum import Enum
+from contextlib import asynccontextmanager
 import shutil
 import os
 from pathlib import Path
@@ -42,7 +43,7 @@ ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24  # 24 hours
 
 # Email Configuration - Support Resend (primary) and SMTP (fallback)
-EMAIL_SERVICE_URL = os.getenv("EMAIL_SERVICE_URL", "").strip()  # Optional external mailer (e.g., Nodemailer service)
+EMAIL_SERVICE_URL = os.getenv("EMAIL_SERVICE_URL", "").strip()  # Optional external mailer (deprecated - use Resend or SMTP directly)
 RESEND_API_KEY = os.getenv("RESEND_API_KEY", "re_W7dx377D_4VR7e4gGzoAgs8uFUhCpcPGj").strip()
 RESEND_FROM_EMAIL = os.getenv("RESEND_FROM_EMAIL", "onboarding@resend.dev").strip()
 
@@ -760,7 +761,7 @@ This code expires in 10 minutes. If you didn't request this code, you can ignore
                 print(f"   Falling back to Resend/SMTP...\n")
         else:
             print(f"ℹ️  EMAIL_SERVICE_URL not configured. Skipping external email service.")
-            print(f"   Set EMAIL_SERVICE_URL=http://localhost:4000 to use Node.js email service\n")
+            print(f"   Using Resend or SMTP directly for email sending.\n")
 
         # 1) Try Resend API
         if RESEND_CONFIGURED:
@@ -930,16 +931,13 @@ async def get_current_user_optional(
     user = db.query(User).filter(User.email == token_data.email).first()
     return user
 
-# ========== FastAPI App ==========
-app = FastAPI(title="Paper Portal API", version="2.0.0")
-
 # Keep-alive background task to prevent auto-shutdown on free tier platforms
 async def keep_alive_task():
     """Background task to keep server alive - maintains active event loop"""
     while True:
         try:
             # Sleep for 5 minutes (300 seconds)
-            # Render free tier spins down after 15 minutes of inactivity
+            # Railway free tier may spin down after inactivity
             # This keeps the process active, preventing idle detection
             await asyncio.sleep(300)
             # Log keep-alive heartbeat (this keeps the process active)
@@ -951,21 +949,34 @@ async def keep_alive_task():
             print(f"Keep-alive task error (non-critical): {e}")
             await asyncio.sleep(300)
 
-# Startup event to log configuration
-@app.on_event("startup")
-async def startup_event():
+# Lifespan context manager for startup/shutdown events (modern FastAPI approach)
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
     print("\n" + "="*70)
     print("🚀 Paper Portal API Starting...")
     print("="*70)
     print(f"✓ Database: {'Neon DB (SSL/TLS enabled)' if 'neon.tech' in DATABASE_URL else 'PostgreSQL'}")
     print(f"✓ Email: {'✓ Configured' if EMAIL_CONFIGURED else '❌ NOT CONFIGURED (Console output only)'}")
     if not EMAIL_CONFIGURED:
-        print(f"  └─ Set GMAIL_USER and GMAIL_PASS in .env to enable email sending")
+        print(f"  └─ Set RESEND_API_KEY or SMTP credentials in .env to enable email sending")
     print("="*70 + "\n")
     
     # Start keep-alive task to prevent auto-shutdown
-    asyncio.create_task(keep_alive_task())
+    keep_alive_task_handle = asyncio.create_task(keep_alive_task())
     print("✓ Keep-alive task started to prevent automatic shutdown\n")
+    
+    yield  # Application runs here
+    
+    # Shutdown (cleanup if needed)
+    keep_alive_task_handle.cancel()
+    try:
+        await keep_alive_task_handle
+    except asyncio.CancelledError:
+        pass
+
+# ========== FastAPI App ==========
+app = FastAPI(title="Paper Portal API", version="2.0.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
