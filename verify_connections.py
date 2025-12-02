@@ -87,7 +87,7 @@ print("2. BACKEND API CONNECTION")
 print("-" * 70)
 
 # Get backend URL from environment or use default
-BACKEND_URL = os.getenv("BACKEND_URL", "https://web-production-e22a6.up.railway.app")
+BACKEND_URL = os.getenv("BACKEND_URL", "https://exam-portal-backend-jklu-solomaze.vercel.app")
 print(f"Backend URL: {BACKEND_URL}")
 
 endpoints_to_check = [

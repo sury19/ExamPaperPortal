@@ -2422,6 +2422,16 @@ def can_preview_file(filename: str) -> bool:
 def root():
     return {"message": "Paper Portal API v2.0", "docs": "/docs"}
 
+
+@app.head("/")
+def root_head():
+    """
+    Handle HEAD requests for the root path so uptime checks don't get 405.
+    """
+    from fastapi import Response
+
+    return Response(status_code=200)
+
 if __name__ == "__main__":
     import uvicorn
     # Railway requires binding to 0.0.0.0 and using PORT environment variable
