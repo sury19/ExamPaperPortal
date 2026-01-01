@@ -1566,12 +1566,16 @@ def get_papers(
     if my_papers_only:
         query = query.filter(Paper.uploaded_by == current_user.id)
     elif not current_user.is_admin:
-        # Non-admins (logged-in students) can only see:
+        # Non-admins (logged-in students) can see:
+        # - All approved papers (from any user)
         # - Their own papers that were rejected by admin
         query = query.filter(
-            and_(
-                Paper.uploaded_by == current_user.id,
-                Paper.status == SubmissionStatus.REJECTED
+            or_(
+                Paper.status == SubmissionStatus.APPROVED,  # All approved papers
+                and_(
+                    Paper.uploaded_by == current_user.id,
+                    Paper.status == SubmissionStatus.REJECTED
+                )  # Or their own rejected papers
             )
         )
     elif status:
