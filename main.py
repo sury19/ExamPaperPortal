@@ -281,6 +281,7 @@ class Course(Base):
     updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
     
     papers = relationship("Paper", back_populates="course")
+    challenges = relationship("DailyChallenge", back_populates="course")
 
 class Paper(Base):
     __tablename__ = "papers"
@@ -324,6 +325,20 @@ class Paper(Base):
         Index('idx_paper_course_status', 'course_id', 'status'),
         Index('idx_paper_type_year', 'paper_type', 'year'),
     )
+
+class DailyChallenge(Base):
+    __tablename__ = "daily_challenges"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    course_id = Column(Integer, ForeignKey("courses.id", ondelete="CASCADE"))
+    date = Column(String(50), nullable=False)  # e.g., "Day 1", "Day 2"
+    question = Column(Text, nullable=False)
+    code_snippet = Column(Text, nullable=False)
+    explanation = Column(Text, nullable=False)
+    media_link = Column(String(500), nullable=True)  # Optional link to PDF/Image
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    course = relationship("Course", back_populates="challenges")
 
 # Create tables (and backfill critical columns if they were added after deployment)
 Base.metadata.create_all(bind=engine)
@@ -506,6 +521,26 @@ class CourseResponse(BaseModel):
     description: Optional[str]
     created_at: datetime
     updated_at: datetime
+
+class DailyChallengeCreate(BaseModel):
+    course_id: int
+    date: str
+    question: str
+    code_snippet: str
+    explanation: str
+    media_link: Optional[str] = None
+
+class DailyChallengeResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    
+    id: int
+    course_id: int
+    date: str
+    question: str
+    code_snippet: str
+    explanation: str
+    media_link: Optional[str]
+    created_at: datetime
 
 class PaperResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -1453,6 +1488,36 @@ def delete_course(course_id: int, db: Session = Depends(get_db), admin: User = D
     db.delete(course)
     db.commit()
     return {"message": "Course deleted successfully"}
+
+# ========== Coding Hour Endpoints ==========
+@app.post("/challenges", response_model=DailyChallengeResponse)
+def create_challenge(challenge: DailyChallengeCreate, db: Session = Depends(get_db), admin: User = Depends(require_admin)):
+    """Admin: Create a new daily challenge"""
+    # Check if course exists
+    course = db.query(Course).filter(Course.id == challenge.course_id).first()
+    if not course:
+        raise HTTPException(status_code=404, detail="Course not found")
+
+    db_challenge = DailyChallenge(**challenge.dict())
+    db.add(db_challenge)
+    db.commit()
+    db.refresh(db_challenge)
+    return db_challenge
+
+@app.get("/challenges/course/{course_id}", response_model=List[DailyChallengeResponse])
+def get_course_challenges(course_id: int, db: Session = Depends(get_db)):
+    """Get all challenges for a specific course"""
+    challenges = db.query(DailyChallenge).filter(DailyChallenge.course_id == course_id).order_by(DailyChallenge.id).all()
+    return challenges
+
+@app.get("/challenges/{challenge_id}", response_model=DailyChallengeResponse)
+def get_challenge(challenge_id: int, db: Session = Depends(get_db)):
+    """Get a specific challenge details"""
+    challenge = db.query(DailyChallenge).filter(DailyChallenge.id == challenge_id).first()
+    if not challenge:
+        raise HTTPException(status_code=404, detail="Challenge not found")
+    return challenge
+
 
 # ========== Paper Endpoints ==========
 @app.post("/papers/upload")
