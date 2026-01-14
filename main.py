@@ -250,6 +250,7 @@ class User(Base):
     name = Column(String, nullable=False)
     password_hash = Column(String, nullable=False)
     is_admin = Column(Boolean, default=False)
+    is_sub_admin = Column(Boolean, default=False)  # Contest Host role
     # Profile fields 
     age = Column(Integer, nullable=True)
     year = Column(String(20), nullable=True)
@@ -281,6 +282,7 @@ class Course(Base):
     updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
     
     papers = relationship("Paper", back_populates="course")
+    challenges = relationship("DailyChallenge", back_populates="course")
 
 class Paper(Base):
     __tablename__ = "papers"
@@ -325,6 +327,20 @@ class Paper(Base):
         Index('idx_paper_type_year', 'paper_type', 'year'),
     )
 
+class DailyChallenge(Base):
+    __tablename__ = "daily_challenges"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    course_id = Column(Integer, ForeignKey("courses.id", ondelete="CASCADE"))
+    date = Column(String(50), nullable=False)  # e.g., "Day 1", "Day 2"
+    question = Column(Text, nullable=False)
+    code_snippet = Column(Text, nullable=False)
+    explanation = Column(Text, nullable=False)
+    media_link = Column(String(500), nullable=True)  # Optional link to PDF/Image
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    course = relationship("Course", back_populates="challenges")
+
 # Create tables (and backfill critical columns if they were added after deployment)
 Base.metadata.create_all(bind=engine)
 
@@ -338,6 +354,16 @@ JSON_COLUMN_SQL = {
 
 ensure_column_exists(engine, "users", "admin_feedback", JSON_COLUMN_SQL)
 ensure_column_exists(engine, "papers", "admin_feedback", JSON_COLUMN_SQL)
+
+# Ensure is_sub_admin column exists on users table
+BOOLEAN_COLUMN_SQL = {
+    "postgresql": "BOOLEAN DEFAULT FALSE",
+    "sqlite": "BOOLEAN DEFAULT 0",
+    "mysql": "BOOLEAN DEFAULT FALSE",
+    "mssql": "BIT DEFAULT 0",
+    "default": "BOOLEAN DEFAULT FALSE",
+}
+ensure_column_exists(engine, "users", "is_sub_admin", BOOLEAN_COLUMN_SQL)
 
 # Ensure new department column exists on papers table
 DEPARTMENT_COLUMN_SQL = {
@@ -377,6 +403,11 @@ class RegisterRequest(BaseModel):
     name: str
     password: str
     confirm_password: str
+
+class SubAdminCreate(BaseModel):
+    email: EmailStr
+    name: str
+    password: str
 
 
 class LoginRequest(BaseModel):
@@ -453,6 +484,7 @@ class UserResponse(BaseModel):
     email: str
     name: str
     is_admin: bool
+    is_sub_admin: bool = False
     email_verified: bool
     # extended profile fields
     age: Optional[int] = None
@@ -506,6 +538,26 @@ class CourseResponse(BaseModel):
     description: Optional[str]
     created_at: datetime
     updated_at: datetime
+
+class DailyChallengeCreate(BaseModel):
+    course_id: int
+    date: str
+    question: str
+    code_snippet: str
+    explanation: str
+    media_link: Optional[str] = None
+
+class DailyChallengeResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    
+    id: int
+    course_id: int
+    date: str
+    question: str
+    code_snippet: str
+    explanation: str
+    media_link: Optional[str]
+    created_at: datetime
 
 class PaperResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -616,9 +668,14 @@ async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = De
         raise credentials_exception
     return user
 
-def require_admin(current_user: User = Depends(get_current_user)):
     if not current_user.is_admin:
         raise HTTPException(status_code=403, detail="Admin access required")
+    return current_user
+
+def require_host(current_user: User = Depends(get_current_user)):
+    """Allow access to Admins OR Sub Admins (Hosts)"""
+    if not current_user.is_admin and not current_user.is_sub_admin:
+        raise HTTPException(status_code=403, detail="Host access required (Admin or Sub Admin)")
     return current_user
 
 async def get_current_user_optional(
@@ -1050,12 +1107,64 @@ def create_admin(user: UserCreate, db: Session = Depends(get_db)):
         name=user.name,
         password_hash=hashed_password,
         is_admin=True,
-        email_verified=True  # Admins are pre-verified
+        email_verified=True,  # Admins are pre-verified
+        is_sub_admin=False
     )
     db.add(admin_user)
     db.commit()
     db.refresh(admin_user)
     return admin_user
+
+@app.post("/admin/create-user", response_model=UserResponse)
+def create_user(
+    user: UserCreate, 
+    db: Session = Depends(get_db), 
+    admin: User = Depends(require_admin)
+):
+    """Admin: Create a new user (student) manually"""
+    # implementation details...
+    existing_user = db.query(User).filter(User.email == user.email).first()
+    if existing_user:
+        raise HTTPException(status_code=400, detail="Email already registered")
+    
+    hashed_password = get_password_hash(user.password)
+    db_user = User(
+        email=user.email,
+        name=user.name,
+        password_hash=hashed_password,
+        is_admin=False,
+        email_verified=True,  # Admins create verified users
+        is_sub_admin=False
+    )
+    db.add(db_user)
+    db.commit()
+    db.refresh(db_user)
+    return db_user
+
+@app.post("/admin/create-sub-admin", response_model=UserResponse)
+def create_sub_admin(
+    user: SubAdminCreate,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin)
+):
+    """Admin: Create a new Sub Admin (Contest Host)"""
+    existing_user = db.query(User).filter(User.email == user.email).first()
+    if existing_user:
+        raise HTTPException(status_code=400, detail="Email already registered")
+    
+    hashed_password = get_password_hash(user.password)
+    db_user = User(
+        email=user.email,
+        name=user.name,
+        password_hash=hashed_password,
+        is_admin=False,
+        is_sub_admin=True,
+        email_verified=True
+    )
+    db.add(db_user)
+    db.commit()
+    db.refresh(db_user)
+    return db_user
 
 @app.post("/login", response_model=Token)
 def login(request: LoginRequest, db: Session = Depends(get_db)):
@@ -1453,6 +1562,65 @@ def delete_course(course_id: int, db: Session = Depends(get_db), admin: User = D
     db.delete(course)
     db.commit()
     return {"message": "Course deleted successfully"}
+
+# ========== Coding Hour Endpoints ==========
+@app.post("/challenges/upload")
+async def upload_challenge_media(
+    file: UploadFile = File(...),
+    current_user: User = Depends(require_host)
+):
+    """Host: Upload media (PDF/Image) for a daily challenge"""
+    # Validate file type
+    allowed_extensions = {".pdf", ".jpg", ".jpeg", ".png"}
+    file_ext = Path(file.filename).suffix.lower()
+    if file_ext not in allowed_extensions:
+        raise HTTPException(status_code=400, detail="Invalid file type. Allowed: PDF, JPG, PNG")
+    
+    # Generate unique filename
+    timestamp = datetime.now(timezone.utc).timestamp()
+    safe_filename = f"challenge_{timestamp}{file_ext}"
+    file_path = UPLOAD_DIR / safe_filename
+    
+    # Save file
+    try:
+        with file_path.open("wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Could not save file: {str(e)}")
+        
+    # Return relative path/URL
+    # Construct full URL or relative path depending on how frontend expects it
+    # For similarity with existing 'media_link' usage which expects a URL:
+    return {"media_link": f"{PUBLIC_BASE_URL}/uploads/{safe_filename}"}
+
+@app.post("/challenges", response_model=DailyChallengeResponse)
+def create_challenge(challenge: DailyChallengeCreate, db: Session = Depends(get_db), host: User = Depends(require_host)):
+    """Host: Create a new daily challenge"""
+    # Check if course exists
+    course = db.query(Course).filter(Course.id == challenge.course_id).first()
+    if not course:
+        raise HTTPException(status_code=404, detail="Course not found")
+
+    db_challenge = DailyChallenge(**challenge.dict())
+    db.add(db_challenge)
+    db.commit()
+    db.refresh(db_challenge)
+    return db_challenge
+
+@app.get("/challenges/course/{course_id}", response_model=List[DailyChallengeResponse])
+def get_course_challenges(course_id: int, db: Session = Depends(get_db)):
+    """Get all challenges for a specific course"""
+    challenges = db.query(DailyChallenge).filter(DailyChallenge.course_id == course_id).order_by(DailyChallenge.id).all()
+    return challenges
+
+@app.get("/challenges/{challenge_id}", response_model=DailyChallengeResponse)
+def get_challenge(challenge_id: int, db: Session = Depends(get_db)):
+    """Get a specific challenge details"""
+    challenge = db.query(DailyChallenge).filter(DailyChallenge.id == challenge_id).first()
+    if not challenge:
+        raise HTTPException(status_code=404, detail="Challenge not found")
+    return challenge
+
 
 # ========== Paper Endpoints ==========
 @app.post("/papers/upload")
