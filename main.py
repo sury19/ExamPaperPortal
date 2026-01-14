@@ -250,248 +250,7 @@ class User(Base):
     name = Column(String, nullable=False)
     password_hash = Column(String, nullable=False)
     is_admin = Column(Boolean, default=False)
-    admin_role = Column(String(50), nullable=True)  # 'coding_ta' or None (Super Admin)
-    # Profile fields 
-    age = Column(Integer, nullable=True)
-    year = Column(String(20), nullable=True)
-    university = Column(String(255), nullable=True)
-    department = Column(String(255), nullable=True)
-    roll_no = Column(String(100), nullable=True)
-    student_id = Column(String(100), nullable=True)
-    photo_path = Column(String(500), nullable=True)  # Kept for backward compatibility
-    id_card_path = Column(String(500), nullable=True)  # Kept for backward compatibility
-    photo_data = Column(LargeBinary, nullable=True)  # Store file content in database
-    id_card_data = Column(LargeBinary, nullable=True)  # Store file content in database
-    id_verified = Column(Boolean, default=False)
-    verified_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
-    verified_at = Column(DateTime, nullable=True)
-    email_verified = Column(Boolean, default=False)
-    admin_feedback = Column(JSON, nullable=True)  # JSON field for admin feedback/rejection messages
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
-    
-    papers = relationship("Paper", foreign_keys="Paper.uploaded_by", back_populates="uploader")
-
-class Course(Base):
-    __tablename__ = "courses"
-    
-    id = Column(Integer, primary_key=True, index=True)
-    code = Column(String(50), unique=True, nullable=False, index=True)
-    name = Column(String(255), nullable=False)
-    description = Column(Text)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
-    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
-    
-    papers = relationship("Paper", back_populates="course")
-    challenges = relationship("DailyChallenge", back_populates="course")
-
-class Paper(Base):
-    __tablename__ = "papers"
-    
-    id = Column(Integer, primary_key=True, index=True)
-    course_id = Column(Integer, ForeignKey("courses.id", ondelete="CASCADE"), index=True)
-    uploaded_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), index=True)
-    
-    title = Column(String(255), nullable=False, index=True)
-    description = Column(Text)
-    paper_type = Column(SQLEnum(PaperType), nullable=False, index=True)
-    year = Column(Integer, index=True)
-    semester = Column(String(20), index=True)
-    # New optional department/program field (e.g., BTECH, BBA, CCCT)
-    department = Column(String(255), nullable=True, index=True)
-    
-    file_path = Column(String(500), nullable=True)  # Kept for backward compatibility, now nullable
-    file_name = Column(String(255), nullable=False)
-    file_size = Column(Integer)
-    file_data = Column(LargeBinary, nullable=True)  # Store file content in database
-    
-    # Public sharing link - unique identifier for public access
-    public_link_id = Column(String(100), unique=True, nullable=True, index=True)
-    
-    status = Column(SQLEnum(SubmissionStatus), default=SubmissionStatus.PENDING, index=True)
-    reviewed_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"))
-    reviewed_at = Column(DateTime)
-    rejection_reason = Column(Text)  # Kept for backward compatibility
-    admin_feedback = Column(JSON, nullable=True)  # JSON field for admin feedback/rejection messages
-    
-    uploaded_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
-    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
-    
-    course = relationship("Course", back_populates="papers", lazy="joined")
-    uploader = relationship("User", foreign_keys=[uploaded_by], back_populates="papers", lazy="joined")
-    reviewer = relationship("User", foreign_keys=[reviewed_by], lazy="select")
-    
-    # Composite indexes for common query patterns
-    __table_args__ = (
-        Index('idx_paper_status_uploaded', 'status', 'uploaded_at'),
-        Index('idx_paper_course_status', 'course_id', 'status'),
-        Index('idx_paper_type_year', 'paper_type', 'year'),
-    )
-
-class DailyChallenge(Base):
-    __tablename__ = "daily_challenges"
-    
-    id = Column(Integer, primary_key=True, index=True)
-    course_id = Column(Integer, ForeignKey("courses.id", ondelete="CASCADE"))
-    date = Column(String(50), nullable=False)  # e.g., "Day 1", "Day 2"
-    question = Column(Text, nullable=False)
-    code_snippet = Column(Text, nullable=False)
-    explanation = Column(Text, nullable=False)
-    media_link = Column(String(500), nullable=True)  # Optional link to PDF/Image
-    created_at = Column(DateTime, default=datetime.utcnow)
-    
-    course = relationship("Course", back_populates="challenges")
-
-# Create tables (and backfill critical columns if they were added after deployment)
-Base.metadata.create_all(bind=engine)
-
-JSON_COLUMN_SQL = {
-    "postgresql": "JSONB",
-    "sqlite": "TEXT",
-    "mysql": "JSON",
-    "mssql": "NVARCHAR(MAX)",
-    "default": "JSON",
-}
-
-ensure_column_exists(engine, "users", "admin_feedback", JSON_COLUMN_SQL)
-ensure_column_exists(engine, "papers", "admin_feedback", JSON_COLUMN_SQL)
-
-# Ensure new department column exists on papers table
-DEPARTMENT_COLUMN_SQL = {
-    "postgresql": "VARCHAR(255)",
-    "sqlite": "TEXT",
-    "mysql": "VARCHAR(255)",
-    "mssql": "NVARCHAR(255)",
-    "default": "VARCHAR(255)",
-}
-ensure_column_exists(engine, "papers", "department", DEPARTMENT_COLUMN_SQL)
-
-# Ensure public_link_id column exists on papers table
-PUBLIC_LINK_ID_COLUMN_SQL = {
-    "postgresql": "VARCHAR(100)",
-    "sqlite": "TEXT",
-    "mysql": "VARCHAR(100)",
-    "mssql": "NVARCHAR(100)",
-    "default": "VARCHAR(100)",
-}
-ensure_column_exists(engine, "papers", "public_link_id", PUBLIC_LINK_ID_COLUMN_SQL)
-
-# Ensure admin_role column exists on users table
-ADMIN_ROLE_COLUMN_SQL = {
-    "postgresql": "VARCHAR(50)",
-    "sqlite": "TEXT",
-    "mysql": "VARCHAR(50)",
-    "mssql": "NVARCHAR(50)",
-    "default": "VARCHAR(50)",
-}
-ensure_column_exists(engine, "users", "admin_role", ADMIN_ROLE_COLUMN_SQL)
-
-# Ensure photo_data and id_card_data columns exist on users table (for large binary storage)
-LARGE_BINARY_COLUMN_SQL = {
-    "postgresql": "BYTEA",
-    "sqlite": "BLOB",
-    "mysql": "LONGBLOB",
-    "mssql": "VARBINARY(MAX)",
-    "default": "BLOB",
-}
-ensure_column_exists(engine, "users", "photo_data", LARGE_BINARY_COLUMN_SQL)
-ensure_column_exists(engine, "users", "id_card_data", LARGE_BINARY_COLUMN_SQL)
-
-
-# ========== Pydantic Schemas ==========
-class Token(BaseModel):
-    access_token: str
-    token_type: str
-
-class TokenData(BaseModel):
-    email: Optional[str] = None
-
-class UserCreate(BaseModel):
-    email: EmailStr
-    name: str
-    password: str
-
-class RegisterRequest(BaseModel):
-    email: EmailStr
-    name: str
-    password: str
-    confirm_password: str
-
-
-class LoginRequest(BaseModel):
-    email: EmailStr
-    password: str
-
-# Helper function for normalizing file paths (needed by UserResponse)
-def normalize_file_path(file_path: Optional[str]) -> Optional[str]:
-    """Normalize file path to just filename for frontend consumption"""
-    if not file_path:
-        return None
-    
-    # If it's an absolute path, extract just the filename
-    if os.path.isabs(file_path):
-        file_path = Path(file_path).name
-    # Remove 'uploads/' prefix if present
-    if file_path.startswith('uploads/') or file_path.startswith('uploads\\'):
-        file_path = file_path.replace('uploads/', '').replace('uploads\\', '')
-    # Ensure it's just the filename (relative to uploads/)
-    return Path(file_path).name
-
-def find_file_in_uploads(stored_path: str) -> Optional[Path]:
-    """
-    Find file in uploads directory based on stored path.
-    Returns the file path if found, None otherwise.
-    Handles various path formats from different database migrations.
-    """
-    if not stored_path:
-        return None
-    
-    # Extract filename from stored path
-    if os.path.isabs(stored_path):
-        filename = Path(stored_path).name
-    else:
-        if stored_path.startswith('uploads/') or stored_path.startswith('uploads\\'):
-            filename = stored_path.replace('uploads/', '').replace('uploads\\', '')
-            filename = Path(filename).name
-        else:
-            filename = Path(stored_path).name
-    
-    # Try multiple possible file locations
-    possible_paths = []
-    
-    # First, try the stored_path exactly as it is (most reliable for new uploads)
-    if not os.path.isabs(stored_path):
-        if stored_path.startswith('uploads/') or stored_path.startswith('uploads\\'):
-            clean_stored = stored_path.replace('uploads/', '').replace('uploads\\', '')
-            possible_paths.append(UPLOAD_DIR / clean_stored)
-        else:
-            possible_paths.append(UPLOAD_DIR / stored_path)
-    
-    # Second, try the extracted filename
-    if filename:
-        possible_paths.append(UPLOAD_DIR / filename)
-    
-    # Try each possible path
-    for path in possible_paths:
-        try:
-            resolved_path = path.resolve()
-            uploads_dir = UPLOAD_DIR.resolve()
-            # Security: Ensure file is within uploads directory
-            if str(resolved_path).startswith(str(uploads_dir)) and resolved_path.exists() and resolved_path.is_file():
-                return resolved_path
-        except Exception:
-            continue
-    
-    return None
-
-class UserResponse(BaseModel):
-    admin_feedback: Optional[dict] = None  # JSON field for admin feedback/rejection messages
-    model_config = ConfigDict(from_attributes=True)
-    
-    id: int
-    email: str
-    name: str
-    is_admin: bool
-    admin_role: Optional[str] = None
+    is_sub_admin: bool = False
     email_verified: bool
     # extended profile fields
     age: Optional[int] = None
@@ -683,31 +442,14 @@ async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = De
         raise credentials_exception
     return user
 
-def require_admin(current_user: User = Depends(get_current_user)):
     if not current_user.is_admin:
         raise HTTPException(status_code=403, detail="Admin access required")
     return current_user
 
-def require_coding_admin(current_user: User = Depends(get_current_user)):
-    """
-    Allow access if user is:
-    1. Super Admin (admin_role is None)
-    2. Coding Hour TA (admin_role == 'coding_ta')
-    """
-    if not current_user.is_admin:
-        raise HTTPException(status_code=403, detail="Admin access required")
-    
-    # If admin_role is set, it must be 'coding_ta' (or None for super admin)
-    # A 'coding_ta' can only access this, but a Super Admin (None) can access everything.
-    # So if they have an admin_role, ensure it includes rights.
-    # For now, if they are admin, they are either Super or specific.
-    # If they are a 'coding_ta', they pass.
-    # If they are super admin (admin_role is None), they pass.
-    # If they are some other future role, maybe block? 
-    # For now, explicit check:
-    if current_user.admin_role and current_user.admin_role != 'coding_ta':
-         raise HTTPException(status_code=403, detail="Coding Hour Admin access required")
-         
+def require_host(current_user: User = Depends(get_current_user)):
+    """Allow access to Admins OR Sub Admins (Hosts)"""
+    if not current_user.is_admin and not current_user.is_sub_admin:
+        raise HTTPException(status_code=403, detail="Host access required (Admin or Sub Admin)")
     return current_user
 
 async def get_current_user_optional(
@@ -1139,12 +881,64 @@ def create_admin(user: UserCreate, db: Session = Depends(get_db)):
         name=user.name,
         password_hash=hashed_password,
         is_admin=True,
-        email_verified=True  # Admins are pre-verified
+        email_verified=True,  # Admins are pre-verified
+        is_sub_admin=False
     )
     db.add(admin_user)
     db.commit()
     db.refresh(admin_user)
     return admin_user
+
+@app.post("/admin/create-user", response_model=UserResponse)
+def create_user(
+    user: UserCreate, 
+    db: Session = Depends(get_db), 
+    admin: User = Depends(require_admin)
+):
+    """Admin: Create a new user (student) manually"""
+    # implementation details...
+    existing_user = db.query(User).filter(User.email == user.email).first()
+    if existing_user:
+        raise HTTPException(status_code=400, detail="Email already registered")
+    
+    hashed_password = get_password_hash(user.password)
+    db_user = User(
+        email=user.email,
+        name=user.name,
+        password_hash=hashed_password,
+        is_admin=False,
+        email_verified=True,  # Admins create verified users
+        is_sub_admin=False
+    )
+    db.add(db_user)
+    db.commit()
+    db.refresh(db_user)
+    return db_user
+
+@app.post("/admin/create-sub-admin", response_model=UserResponse)
+def create_sub_admin(
+    user: SubAdminCreate,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin)
+):
+    """Admin: Create a new Sub Admin (Contest Host)"""
+    existing_user = db.query(User).filter(User.email == user.email).first()
+    if existing_user:
+        raise HTTPException(status_code=400, detail="Email already registered")
+    
+    hashed_password = get_password_hash(user.password)
+    db_user = User(
+        email=user.email,
+        name=user.name,
+        password_hash=hashed_password,
+        is_admin=False,
+        is_sub_admin=True,
+        email_verified=True
+    )
+    db.add(db_user)
+    db.commit()
+    db.refresh(db_user)
+    return db_user
 
 @app.post("/login", response_model=Token)
 def login(request: LoginRequest, db: Session = Depends(get_db)):
@@ -1544,9 +1338,38 @@ def delete_course(course_id: int, db: Session = Depends(get_db), admin: User = D
     return {"message": "Course deleted successfully"}
 
 # ========== Coding Hour Endpoints ==========
+@app.post("/challenges/upload")
+async def upload_challenge_media(
+    file: UploadFile = File(...),
+    current_user: User = Depends(require_host)
+):
+    """Host: Upload media (PDF/Image) for a daily challenge"""
+    # Validate file type
+    allowed_extensions = {".pdf", ".jpg", ".jpeg", ".png"}
+    file_ext = Path(file.filename).suffix.lower()
+    if file_ext not in allowed_extensions:
+        raise HTTPException(status_code=400, detail="Invalid file type. Allowed: PDF, JPG, PNG")
+    
+    # Generate unique filename
+    timestamp = datetime.now(timezone.utc).timestamp()
+    safe_filename = f"challenge_{timestamp}{file_ext}"
+    file_path = UPLOAD_DIR / safe_filename
+    
+    # Save file
+    try:
+        with file_path.open("wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Could not save file: {str(e)}")
+        
+    # Return relative path/URL
+    # Construct full URL or relative path depending on how frontend expects it
+    # For similarity with existing 'media_link' usage which expects a URL:
+    return {"media_link": f"{PUBLIC_BASE_URL}/uploads/{safe_filename}"}
+
 @app.post("/challenges", response_model=DailyChallengeResponse)
-def create_challenge(challenge: DailyChallengeCreate, db: Session = Depends(get_db), admin: User = Depends(require_coding_admin)):
-    """Admin: Create a new daily challenge"""
+def create_challenge(challenge: DailyChallengeCreate, db: Session = Depends(get_db), host: User = Depends(require_host)):
+    """Host: Create a new daily challenge"""
     # Check if course exists
     course = db.query(Course).filter(Course.id == challenge.course_id).first()
     if not course:
